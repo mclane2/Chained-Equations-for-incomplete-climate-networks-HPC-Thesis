@@ -1,7 +1,7 @@
 
-## Elastic-net Chained Equations primary functions ##
+## Synchronous Elastic-net Chained Equations primary functions ##
 
-# Author: Brian O'Sullivan
+# Author: Brian O'Sullivan (modified by Marc Lane)
 # Please refer to https://doi.org/10.1002/joc.8513 for further details 
 # where the method is implemented on the Irish rainfall network
 
@@ -12,13 +12,16 @@
 ## must be included, missing or non-missing, and duplicate 
 ## combinations are not allowed
 
+## Removed parallelism for cross validation
+## ENCE_impute is replaced with ENCE_impute_parallel, so that matrix is only 
+## updated after all the columns are updated (loop iterations are now independent)
+
 ENCE <- function(df, response = "y", 
                  hyp_cycles = 2, 
                  max_cycles = 16, 
                  init_method = c("mean", "idw"),
                  spatial_id = "stno", time_id = "t",
                  tol = 1,
-                 nclusters = 1,
                  transformation = {function(x) x},
                  reverse_transformation = {function(x) x},
                  ...){
@@ -29,7 +32,6 @@ ENCE <- function(df, response = "y",
   # init_method             -Method for getting starting imputed values
   # spatial_id, time_id     -Column names for locations and times
   # tol                     -Tolerance value for convergence
-  # nclusters               -Number of clusters if doing parallel computing
   # transformation          -Can do initial transformation of data
   
   # Load in necessary packages
@@ -70,14 +72,6 @@ ENCE <- function(df, response = "y",
   # Transformation of response
   df[response] <- transformation(df[response])
   
-  if(nclusters > 1){
-    require(parallel)
-    
-    # Make cluster for parallel computing
-    cluster <- makeCluster(nclusters)
-  }
-  else{cluster <- NULL}
-                      
   # Get wide table of missing entry locations
   missing_idx <- df %>% dplyr::select(all_of(c(time_id, spatial_id)), missing) %>%
     pivot_wider(names_from = all_of(spatial_id), 
@@ -99,6 +93,9 @@ ENCE <- function(df, response = "y",
   # Iterator and convergence tracking
   i <- 1; old_rmse <- .Machine$double.xmax; new_rmse <- .Machine$double.xmax
   
+  # Track RMSE per cycle
+  rmse_history <- c()
+
   # Loop through imputation cycle multiple times
   while((i <= max_cycles) & ((old_rmse/new_rmse > tol) | (i == 1))){
     
@@ -107,13 +104,14 @@ ENCE <- function(df, response = "y",
     old_rmse <- new_rmse
     
     # Compute imputed values and update lambdas/alphas
-    imputed_df <- ENCE_impute(df, missing_idx, ls, as, ...)
+    imputed_df <- ENCE_impute_parallel(df, missing_idx, ls, as, ...)
     df <- imputed_df$df
     ls <- imputed_df$ls
     as <- imputed_df$as
     
     # New RMSE for convergence
     new_rmse <- rmse(past_values, df[missing_idx])
+    rmse_history <- c(rmse_history, new_rmse)
     
     # Reset lambdas and alphas if still updating hyperparameters
     if (i < hyp_cycles){
@@ -142,6 +140,8 @@ ENCE <- function(df, response = "y",
   df[time_id] <- original_times
   df[response] <- reverse_transformation(df[response])
   
+  attr(df, "rmse_history") <- rmse_history
+
   return(df)
 }
 
@@ -149,27 +149,31 @@ ENCE <- function(df, response = "y",
 
 
 # One single imputation cycle for all spatial locations
-
-ENCE_impute <- function(df, missing_idx, ls = NA, as = NA, ...){
+# Updated ENCE_impute for allowing parallel iterations
+# Matrix df is only updated after all the columns are updated (loop iterations are now independant)
+ENCE_impute_parallel <- function(df, missing_idx, ls = NA, as = NA, ...){
   
   # df              -Input data
   # missing_idx     -Index of all originally missing values
   # ls              -Initial lambda parameters for all imputation models
   # as              -Initial alpha parameters for all imputation models
   
+  # Snapshot of df at the start of the cycle that covariates will read from
+  df_old <- df
+
   # Loop through and update each column
   for (column in 1:ncol(df)){
     
     # Get target column, other columns, and missing index
-    target <- df[, column]; covariates <- df[, -column]
+    target <- df_old[, column]; covariates <- df_old[, -column]
     missing_values <- missing_idx[, column]
     
     # Impute target station
-    imputed_column <- column_impute(covariates, target, missing_values, 
-                                    ls[column], as[column], ...)
+    imputed_column <- column_impute(covariates, target, missing_values,
+                                    ls[column], as[column])
     
     # Update covariates and hyper  parameters with imputation model output
-    target <- imputed_column$target; df[, column] <- target
+    df[, column] <- imputed_column$target
     ls[column] <- imputed_column$lambda; as[column] <- imputed_column$alpha
   }
     
@@ -184,8 +188,7 @@ ENCE_impute <- function(df, missing_idx, ls = NA, as = NA, ...){
 column_impute <- function(covariates, target, missing_values, 
                           lambda = NA, alpha = NA, 
                           lambdas = c(0.05, 0.1, 0.15, 0.2),
-                          alphas = c(0.1, 0.35, 0.65, 0.9),
-                          cluster = NULL){
+                          alphas = c(0.1, 0.35, 0.65, 0.9)){
   
   # covariates          -Covariate Columns (X)
   # target              -Target Column (Y)
@@ -193,7 +196,6 @@ column_impute <- function(covariates, target, missing_values,
   # lambda              -Tuning Parameter (rate of regularisation)
   # alpha               -Weighted value between lasso and ridge regression
   # lambdas/alphas      -Hyper parameter values to be checked using CV
-  # cluster             -Can provide a cluster for parallel computing
   
   require(glmnet); require(glmnetUtils)
   
@@ -211,8 +213,7 @@ column_impute <- function(covariates, target, missing_values,
       set.seed(222)
       # Fit E-Net with CV to fit lambda and alpha
       model <- cva.glmnet(x = x[!ymiss, ], y = y[!ymiss], 
-                          lambda = lambdas, alpha = alphas,
-                          outerParallel = cluster)
+                          lambda = lambdas, alpha = alphas)
       
       # Get the best cvm (error) and corresponding lambda for each alpha
       cvms <- unlist(lapply(model$modlist, extract_best_cvm))

@@ -1,7 +1,7 @@
 
-## Elastic-net Chained Equations primary functions ##
+## Sequential Elastic-net Chained Equations primary functions ##
 
-# Author: Brian O'Sullivan
+# Author: Brian O'Sullivan (modified by Marc Lane)
 # Please refer to https://doi.org/10.1002/joc.8513 for further details 
 # where the method is implemented on the Irish rainfall network
 
@@ -11,6 +11,8 @@
 ## measurement with a spatial ID and time ID. All possible ID combinations
 ## must be included, missing or non-missing, and duplicate 
 ## combinations are not allowed
+
+## Removed parallelism for cross validation
 
 ENCE <- function(df, response = "y", 
                  hyp_cycles = 2, 
@@ -89,6 +91,9 @@ ENCE <- function(df, response = "y",
   # Iterator and convergence tracking
   i <- 1; old_rmse <- .Machine$double.xmax; new_rmse <- .Machine$double.xmax
   
+  # Track RMSE per cycle
+  rmse_history <- c()
+
   # Loop through imputation cycle multiple times
   while((i <= max_cycles) & ((old_rmse/new_rmse > tol) | (i == 1))){
     
@@ -104,6 +109,7 @@ ENCE <- function(df, response = "y",
     
     # New RMSE for convergence
     new_rmse <- rmse(past_values, df[missing_idx])
+    rmse_history <- c(rmse_history, new_rmse)
     
     # Reset lambdas and alphas if still updating hyperparameters
     if (i < hyp_cycles){
@@ -131,6 +137,8 @@ ENCE <- function(df, response = "y",
   # Add times back and undo transformation
   df[time_id] <- original_times
   df[response] <- reverse_transformation(df[response])
+
+  attr(df, "rmse_history") <- rmse_history
   
   return(df)
 }
@@ -155,8 +163,8 @@ ENCE_impute <- function(df, missing_idx, ls = NA, as = NA, ...){
     missing_values <- missing_idx[, column]
     
     # Impute target station
-    imputed_column <- column_impute(covariates, target, missing_values, 
-                                    ls[column], as[column], ...)
+    imputed_column <- column_impute(covariates, target, missing_values,
+                                    ls[column], as[column])
     
     # Update covariates and hyper  parameters with imputation model output
     target <- imputed_column$target; df[, column] <- target

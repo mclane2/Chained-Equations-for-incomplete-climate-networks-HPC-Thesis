@@ -1,0 +1,75 @@
+
+# ENCE - Sequential vs Synchonous Updates
+
+Investigating the convergence behaviour of the Elastic-net Chained Equations (ENCE) algorithm with Sequential vs Synchonous updates.
+
+The original ENCE algorithm imputes each column of the data matrix $Z$ column-by-column within an outer cycle, where each station's regression model is fit using the most recently imputed values of all other stations.
+
+The alternative algorithm considered here updates all stations within a cycle against a frozen snapshot of $Z$ taken at the start of that cycle, so the update order within a cycle no longer matters. The motivation for this change is to allow for parallelism.
+
+Further details of ENCE can be found in the study at https://doi.org/10.1002/joc.8513
+The data that support the findings of this study are available upon reasonable request to the author(s) and with the permission of Met Éireann, Ireland's meteorological office.
+
+## Setup
+
+Load the simulated data and source both ENCE variants.
+
+```{r setup, message=FALSE}
+source("idw.R")
+source("ENCE_serial.R")     # sequential updates
+source("ENCE_parallel.R")   # synchronous updates (serial execution for now)
+
+n_stations <- 50
+n_months   <- 60
+
+rain <- read.csv("simulated_rainfall.csv")
+rain <- rain[rain$stno <= n_stations & rain$t <= n_months, ] # Simulating a smaller subset of data for now
+```
+
+
+## Internal convergence
+
+Mask 25% of the data at random, then run both schemes from the same starting point. 
+Tracking the internal RMSE between successive imputed datasets. This measures how much the imputed values are moving from one cycle to the next.
+
+```{r make-missing}
+df_miss <- rain
+set.seed(222)
+sample_rows <- sort(sample(nrow(df_miss), nrow(df_miss) * 0.25))
+df_miss[sample_rows, "y"] <- NA
+```
+
+```{r run-sequential, message=FALSE, results='hide'}
+source("ENCE_serial.R")
+imp_seq <- ENCE(df_miss, response = "y", max_cycles = 30,
+               init_method = "idw",
+               x_name = "east", y_name = "north", t_name = "t",
+               C = 15000,
+               transformation = sqrt,
+               reverse_transformation = function(x) x^2)
+rmse_seq <- attr(imp_seq, "rmse_history")
+```
+
+```{r run-synchronous, message=FALSE, results='hide'}
+source("ENCE_parallel.R")
+imp_sync <- ENCE(df_miss, response = "y", max_cycles = 30,
+               init_method = "idw",
+               x_name = "east", y_name = "north", t_name = "t",
+               C = 15000,
+               transformation = sqrt,
+               reverse_transformation = function(x) x^2)
+rmse_sync <- attr(imp_sync, "rmse_history")
+```
+
+```{r plot-convergence, fig.width=8, fig.height=5}
+xlim_range <- c(1, max(length(rmse_seq), length(rmse_sync)))
+
+plot(rmse_seq, type = "b", col = "blue", pch = 16, log = "y",
+     xlim = xlim_range,
+     ylim = range(c(rmse_seq, rmse_sync)),
+     xlab = "Cycle", ylab = "Internal RMSE (between cycles, log scale)",
+     main = "Internal convergence: sequential vs synchronous")
+lines(rmse_sync, type = "b", col = "red", pch = 17)
+legend("topright", legend = c("Sequential", "Synchronous"),
+       col = c("blue", "red"), pch = c(16, 17), lty = 1)
+```
