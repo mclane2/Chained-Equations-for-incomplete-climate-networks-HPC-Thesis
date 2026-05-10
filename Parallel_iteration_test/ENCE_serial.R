@@ -14,14 +14,16 @@
 
 ## Removed parallelism for cross validation
 
-ENCE <- function(df, response = "y", 
-                 hyp_cycles = 2, 
-                 max_cycles = 16, 
+ENCE <- function(df, response = "y",
+                 hyp_cycles = 2,
+                 max_cycles = 16,
                  init_method = c("mean", "idw"),
                  spatial_id = "stno", time_id = "t",
                  tol = 1,
                  transformation = {function(x) x},
                  reverse_transformation = {function(x) x},
+                 truth = NULL,
+                 masked_idx = NULL,
                  ...){
   
   # df                      -Data frame of response variable and covariates
@@ -93,6 +95,7 @@ ENCE <- function(df, response = "y",
   
   # Track RMSE per cycle
   rmse_history <- c()
+  ext_rmse_history <- c()
 
   # Loop through imputation cycle multiple times
   while((i <= max_cycles) & ((old_rmse/new_rmse > tol) | (i == 1))){
@@ -110,7 +113,21 @@ ENCE <- function(df, response = "y",
     # New RMSE for convergence
     new_rmse <- rmse(past_values, df[missing_idx])
     rmse_history <- c(rmse_history, new_rmse)
-    
+
+    if (!is.null(truth) && !is.null(masked_idx)) {
+      tmp <- df
+      names(tmp) <- substr(names(tmp), nchar(spatial_id)+1, nchar(names(tmp)))
+      tmp <- pivot_longer(tmp, cols = everything(),
+                          names_to = spatial_id, values_to = response)
+      tmp <- tmp %>%
+        mutate(across(all_of(spatial_id),
+                      ~factor(.x, levels = original_spatial_order))) %>%
+        arrange(across(all_of(spatial_id)))
+      imputed_y <- reverse_transformation(tmp[[response]])
+      ext_rmse_history <- c(ext_rmse_history,
+                            sqrt(mean((truth[masked_idx] - imputed_y[masked_idx])^2)))
+    }
+
     # Reset lambdas and alphas if still updating hyperparameters
     if (i < hyp_cycles){
       ls <- NA; as <- NA
@@ -139,7 +156,10 @@ ENCE <- function(df, response = "y",
   df[response] <- reverse_transformation(df[response])
 
   attr(df, "rmse_history") <- rmse_history
-  
+  if (!is.null(truth) && !is.null(masked_idx)) {
+    attr(df, "ext_rmse_history") <- ext_rmse_history
+  }
+
   return(df)
 }
 

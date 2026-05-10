@@ -19,11 +19,11 @@ source("idw.R")
 source("ENCE_serial.R")     # sequential updates
 source("ENCE_parallel.R")   # synchronous updates (serial execution for now)
 
-#n_stations <- 50
-#n_months   <- 60
+n_stations <- 50
+n_months   <- 60
 
 rain <- read.csv("simulated_rainfall.csv")
-#rain <- rain[rain$stno <= n_stations & rain$t <= n_months, ] # Simulating a smaller subset of data for now
+rain <- rain[rain$stno <= n_stations & rain$t <= n_months, ] # Simulating a smaller subset of data for now
 ```
 
 

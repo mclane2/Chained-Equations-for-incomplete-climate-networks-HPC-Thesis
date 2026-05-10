@@ -1,0 +1,27 @@
+{
+    "id": "4F129EF7",
+    "path": "//wsl$/Ubuntu/home/lanem2/HPC_Thesis/Parallel_iteration_test/convergence_behaviour_test.Rmd",
+    "project_path": "convergence_behaviour_test.Rmd",
+    "type": "r_markdown",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1778435681863.0,
+    "source_on_save": false,
+    "relative_order": 1,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "last_setup_crc32": "",
+        "cursorPosition": "5,206",
+        "scrollLine": "0"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1778435665,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1778435665,
+    "read_only": false,
+    "read_only_alternatives": []
+}
