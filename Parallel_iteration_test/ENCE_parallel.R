@@ -99,6 +99,10 @@ ENCE <- function(df, response = "y",
   rmse_history <- c()
   ext_rmse_history <- c()
 
+  # Track regression parameters
+  ls_history <- list()
+  as_history <- list()
+
   # Loop through imputation cycle multiple times
   while((i <= max_cycles) & ((old_rmse/new_rmse > tol) | (i == 1))){
     
@@ -111,23 +115,26 @@ ENCE <- function(df, response = "y",
     df <- imputed_df$df
     ls <- imputed_df$ls
     as <- imputed_df$as
+
+    ls_history[[i]] <- ls
+    as_history[[i]] <- as
     
     # New RMSE for convergence
     new_rmse <- rmse(past_values, df[missing_idx])
     rmse_history <- c(rmse_history, new_rmse)
 
     if (!is.null(truth) && !is.null(masked_idx)) {
-      tmp <- df
-      names(tmp) <- substr(names(tmp), nchar(spatial_id)+1, nchar(names(tmp)))
+      tmp <- df # make a copy
+      names(tmp) <- substr(names(tmp), nchar(spatial_id)+1, nchar(names(tmp))) # Strip prefix from columns
       tmp <- pivot_longer(tmp, cols = everything(),
-                          names_to = spatial_id, values_to = response)
+                          names_to = spatial_id, values_to = response) # Reshape data
       tmp <- tmp %>%
         mutate(across(all_of(spatial_id),
                       ~factor(.x, levels = original_spatial_order))) %>%
-        arrange(across(all_of(spatial_id)))
-      imputed_y <- reverse_transformation(tmp[[response]])
+        arrange(across(all_of(spatial_id))) # Re-sorting rows
+      imputed_y <- reverse_transformation(tmp[[response]]) # Undo the sqrt
       ext_rmse_history <- c(ext_rmse_history,
-                            sqrt(mean((truth[masked_idx] - imputed_y[masked_idx])^2)))
+                            sqrt(mean((truth[masked_idx] - imputed_y[masked_idx])^2))) # Calculating validation RMSE
     }
 
     # Reset lambdas and alphas if still updating hyperparameters
@@ -161,6 +168,9 @@ ENCE <- function(df, response = "y",
   if (!is.null(truth) && !is.null(masked_idx)) {
     attr(df, "ext_rmse_history") <- ext_rmse_history
   }
+
+  attr(df, "ls_history") <- ls_history
+  attr(df, "as_history") <- as_history
 
   return(df)
 }

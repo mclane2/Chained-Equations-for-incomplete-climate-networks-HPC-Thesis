@@ -33,7 +33,7 @@ Mask 25% of the data uniformly at random and run both variants from the same sta
 
 ```{r make-missing}
 df_miss <- rain
-set.seed(222)
+set.seed(313)
 sample_rows <- sort(sample(nrow(df_miss), nrow(df_miss) * 0.25))
 df_miss[sample_rows, "y"] <- NA
 ```
@@ -83,7 +83,7 @@ Plot 2: Validation RMSE
 ```{r plot-external-convergence, fig.width=8, fig.height=5}
 xlim_range <- c(1, max(length(ext_rmse_seq), length(ext_rmse_sync)))
 
-plot(ext_rmse_seq, type = "b", col = "blue", pch = 16, log = "y",
+plot(ext_rmse_seq, type = "b", col = "blue", pch = 16,
      xlim = xlim_range,
      ylim = range(c(ext_rmse_seq, ext_rmse_sync)),
      xlab = "Cycle", ylab = "Validation RMSE (log scale)",
@@ -93,7 +93,8 @@ legend("topright", legend = c("Sequential", "Synchronous"),
        col = c("blue", "red"), pch = c(16, 17), lty = 1)
 ```
 
-Plot 3: Imputed vs true at convergence
+
+Plot 4: Imputed vs true at convergence
 ```{r plot-external, fig.width=10, fig.height=5}
 truth     <- rain$y[sample_rows]
 pred_seq  <- imp_seq$y[sample_rows]
