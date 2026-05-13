@@ -93,8 +93,7 @@ legend("topright", legend = c("Sequential", "Synchronous"),
        col = c("blue", "red"), pch = c(16, 17), lty = 1)
 ```
 
-
-Plot 4: Imputed vs true at convergence
+Plot 3: Imputed vs true at convergence
 ```{r plot-external, fig.width=10, fig.height=5}
 truth     <- rain$y[sample_rows]
 pred_seq  <- imp_seq$y[sample_rows]
@@ -122,3 +121,24 @@ abline(0, 1, lty = 2, col = "grey40")
 par(mfrow = c(1, 1))
 ```
 
+## Hyperparameter agreement
+
+After cycle 2, both serial and synchronous methods freeze their hyperparameters for the remaining cycles. 
+The percentages below give per-station agreement between the two methods on the lambda and alpha values they pick at cycle 2.
+
+```{r hyperparameter-agreement}
+l_seq  <- attr(imp_seq,  "ls_history")[[2]]
+l_sync <- attr(imp_sync, "ls_history")[[2]]
+a_seq  <- attr(imp_seq,  "as_history")[[2]]
+a_sync <- attr(imp_sync, "as_history")[[2]]
+
+cat(sprintf("Stations with matching lambda at cycle 2: %d / %d (%.1f%%)\n",
+            sum(l_seq == l_sync), length(l_seq), 100 * mean(l_seq == l_sync)))
+cat(sprintf("Stations with matching alpha at cycle 2:  %d / %d (%.1f%%)\n",
+            sum(a_seq == a_sync), length(a_seq), 100 * mean(a_seq == a_sync)))
+
+#cat(sprintf("Mean abs difference in lambda: %.3f (grid spans 0.05 to 0.20)\n",
+            #mean(abs(l_seq - l_sync))))
+#cat(sprintf("Mean abs difference in alpha:  %.3f (grid spans 0.10 to 0.90)\n",
+            #mean(abs(a_seq - a_sync))))
+```
