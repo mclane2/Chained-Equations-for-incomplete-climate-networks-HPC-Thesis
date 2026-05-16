@@ -199,8 +199,7 @@ ENCE_impute_parallel <- function(df, missing_idx, ls = NA, as = NA, ...){
     missing_values <- missing_idx[, column]
     
     # Impute target station
-    imputed_column <- column_impute(covariates, target, missing_values,
-                                    ls[column], as[column])
+    imputed_column <- column_impute(covariates, target, missing_values, ls[column], as[column])
     
     # Update covariates and hyper  parameters with imputation model output
     df[, column] <- imputed_column$target
@@ -240,7 +239,7 @@ column_impute <- function(covariates, target, missing_values,
     # Lambda/alpha need to be fit if not provided
     if (is.na(lambda)){
       
-      set.seed(222)
+      set.seed(313)
       # Fit E-Net with CV to fit lambda and alpha
       model <- cva.glmnet(x = x[!ymiss, ], y = y[!ymiss], 
                           lambda = lambdas, alpha = alphas)

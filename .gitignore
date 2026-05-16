@@ -1,4 +1,14 @@
-.Rproj.user/
-.RData
+cat > .gitignore <<'EOF'
+# Rendered R Markdown output
+*.html
+*_files/
+
+# C build artefacts
+*.o
+*.so
+
+# R session files
 .Rhistory
-.Ruserdata/
+.RData
+.Rproj.user/
+EOF

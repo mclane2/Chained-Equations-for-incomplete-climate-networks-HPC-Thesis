@@ -5,17 +5,17 @@ This document runs a very rough and quick accuracy and timing comparison between
 
 ## Setup
 
-Load the simulated data, source the C library glue, and subset to a small problem.
+Load the simulated data
 
 ```{r setup, message=FALSE}
 source("idw.R")
 source("elastic_net_C_implementation/elastic_net_R_glue.R")
 
-n_stations <- 50
-n_months   <- 60
+#n_stations <- 50
+#n_months   <- 60
 
 rain <- read.csv("simulated_rainfall.csv")
-rain <- rain[rain$stno <= n_stations & rain$t <= n_months, ]   # small subset for now
+#rain <- rain[rain$stno <= n_stations & rain$t <= n_months, ]   # small subset for now
 ```
 
 ## Imputation
@@ -29,7 +29,7 @@ sample_rows <- sort(sample(nrow(df_miss), nrow(df_miss) * 0.25))
 df_miss[sample_rows, "y"] <- NA
 ```
 
-Run the original `glmnet`-based ENCE first, then the C-backed version on the same masked data.
+Run the original `glmnet`-based ENCE first, then the C-version on the same masked data.
 
 ```{r run-glmnet, message=FALSE, results='hide'}
 source("ENCE_glmnet.R")
@@ -66,7 +66,6 @@ ext_rmse_c <- attr(imp_c, "ext_rmse_history")
 ```{r timing}
 cat("glmnet version:   ", round(time_glmnet["elapsed"], 2), "seconds\n")
 cat("C version:        ", round(time_c["elapsed"], 2),       "seconds\n")
-cat("Ratio (C/glmnet): ", round(time_c["elapsed"] / time_glmnet["elapsed"], 2), "\n")
 ```
 
 ### Accuracy against truth
@@ -80,23 +79,25 @@ cat("C      final ext_rmse: ", round(tail(ext_rmse_c, 1), 4),       "\n")
 
 Per-cycle external RMSE trajectory:
 
-```{r rmse-plot, fig.width=7, fig.height=4}
-plot(ext_rmse_glmnet, type = "l", col = "steelblue", lwd = 2,
-     xlab = "Cycle", ylab = "External RMSE",
-     main = "Per-cycle validation RMSE: glmnet vs C",
-     ylim = range(c(ext_rmse_glmnet, ext_rmse_c)))
-lines(ext_rmse_c, col = "firebrick", lwd = 2)
+```{r rmse-plot, fig.width=8, fig.height=5}
+xlim_range <- c(1, max(length(ext_rmse_glmnet), length(ext_rmse_c)))
+plot(ext_rmse_glmnet, type = "b", col = "blue", pch = 16,
+     xlim = xlim_range,
+     ylim = range(c(ext_rmse_glmnet, ext_rmse_c)),
+     xlab = "Cycle", ylab = "Validation RMSE",
+     main = "Validation RMSE convergence: glmnet vs C")
+lines(ext_rmse_c, type = "b", col = "red", pch = 17)
 legend("topright", legend = c("glmnet", "C"),
-       col = c("steelblue", "firebrick"), lty = 1, lwd = 2, bty = "n")
+       col = c("blue", "red"), pch = c(16, 17), lty = 1)
 ```
 
 ### Agreement between the two implementations
 
-Direct disagreement between the two methods' imputed values at the masked rows. This is a tighter test than RMSE against truth, because here we should see two implementations producing the *same* answers given the same inputs (modulo numerical precision and CV randomness in fold assignment).
 
 ```{r imputation-agreement}
-imp_diff_rmse <- sqrt(mean((imp_glmnet[sample_rows, "y"] -
-                            imp_c[sample_rows, "y"])^2))
-cat("RMSE between glmnet and C imputations at masked rows:",
-    round(imp_diff_rmse, 4), "\n")
+pred_glmnet <- as.numeric(unlist(imp_glmnet[sample_rows, "y"]))
+pred_c      <- as.numeric(unlist(imp_c[sample_rows, "y"]))
+imp_diff_rmse <- sqrt(mean((pred_glmnet - pred_c)^2))
+cat("RMSE between glmnet and C imputations at masked rows:", round(imp_diff_rmse, 4), "\n")
 ```
+

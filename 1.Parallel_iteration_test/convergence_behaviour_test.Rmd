@@ -1,14 +1,12 @@
+# ENCE - Sequential vs Synchronous Updates
 
-# ENCE - Sequential vs Synchonous Updates
-
-Investigating the convergence behaviour of the Elastic-net Chained Equations (ENCE) algorithm with Sequential vs Synchonous updates.
+Investigating the convergence behaviour of the Elastic-net Chained Equations (ENCE) algorithm with Sequential vs Synchronous updates.
 
 The original ENCE algorithm imputes each column of the data matrix $Z$ column-by-column within an outer cycle, where each station's regression model is fit using the most recently imputed values of all other stations.
 
 The alternative algorithm considered here updates all stations within a cycle against a frozen snapshot of $Z$ taken at the start of that cycle, so the update order within a cycle no longer matters. The motivation for this change is to allow for parallelism.
 
-Further details of ENCE can be found in the study at https://doi.org/10.1002/joc.8513
-The data that support the findings of this study are available upon reasonable request to the author(s) and with the permission of Met Éireann, Ireland's meteorological office.
+Further details of ENCE can be found in the study at <https://doi.org/10.1002/joc.8513> The data that support the findings of this study are available upon reasonable request to the author(s) and with the permission of Met Éireann, Ireland's meteorological office.
 
 ## Setup
 
@@ -26,14 +24,13 @@ rain <- read.csv("simulated_rainfall.csv")
 #rain <- rain[rain$stno <= n_stations & rain$t <= n_months, ] # Simulating a smaller subset of data for now
 ```
 
-
 ## Imputation
 
 Mask 25% of the data uniformly at random and run both variants from the same starting point. The plots that follow compare convergence behaviour and imputation accuracy.
 
 ```{r make-missing}
 df_miss <- rain
-set.seed(313)
+set.seed(541)
 sample_rows <- sort(sample(nrow(df_miss), nrow(df_miss) * 0.25))
 df_miss[sample_rows, "y"] <- NA
 ```
@@ -52,7 +49,7 @@ imp_seq <- ENCE(df_miss, response = "y", max_cycles = 30,
 rmse_seq     <- attr(imp_seq, "rmse_history")
 ext_rmse_seq <- attr(imp_seq, "ext_rmse_history")
 
-source("ENCE_parallel.R")
+source("ENCE_synchronous.R")
 imp_sync <- ENCE(df_miss, response = "y", max_cycles = 30,
                init_method = "idw",
                x_name = "east", y_name = "north", t_name = "t",
@@ -64,8 +61,8 @@ rmse_sync     <- attr(imp_sync, "rmse_history")
 ext_rmse_sync <- attr(imp_sync, "ext_rmse_history")
 ```
 
-
 Plot 1: Internal Convergence
+
 ```{r plot-convergence, fig.width=8, fig.height=5}
 xlim_range <- c(1, max(length(rmse_seq), length(rmse_sync)))
 
@@ -80,6 +77,7 @@ legend("topright", legend = c("Sequential", "Synchronous"),
 ```
 
 Plot 2: Validation RMSE
+
 ```{r plot-external-convergence, fig.width=8, fig.height=5}
 xlim_range <- c(1, max(length(ext_rmse_seq), length(ext_rmse_sync)))
 
@@ -94,6 +92,7 @@ legend("topright", legend = c("Sequential", "Synchronous"),
 ```
 
 Plot 3: Imputed vs true at convergence
+
 ```{r plot-external, fig.width=10, fig.height=5}
 truth     <- rain$y[sample_rows]
 pred_seq  <- imp_seq$y[sample_rows]
@@ -123,8 +122,7 @@ par(mfrow = c(1, 1))
 
 ## Hyperparameter agreement
 
-After cycle 2, both serial and synchronous methods freeze their hyperparameters for the remaining cycles. 
-The percentages below give per-station agreement between the two methods on the lambda and alpha values they pick at cycle 2.
+After cycle 2, both serial and synchronous methods freeze their hyperparameters for the remaining cycles. The percentages below give per-station agreement between the two methods on the lambda and alpha values they pick at cycle 2.
 
 ```{r hyperparameter-agreement}
 l_seq  <- attr(imp_seq,  "ls_history")[[2]]
@@ -137,8 +135,4 @@ cat(sprintf("Stations with matching lambda at cycle 2: %d / %d (%.1f%%)\n",
 cat(sprintf("Stations with matching alpha at cycle 2:  %d / %d (%.1f%%)\n",
             sum(a_seq == a_sync), length(a_seq), 100 * mean(a_seq == a_sync)))
 
-#cat(sprintf("Mean abs difference in lambda: %.3f (grid spans 0.05 to 0.20)\n",
-            #mean(abs(l_seq - l_sync))))
-#cat(sprintf("Mean abs difference in alpha:  %.3f (grid spans 0.10 to 0.90)\n",
-            #mean(abs(a_seq - a_sync))))
 ```
