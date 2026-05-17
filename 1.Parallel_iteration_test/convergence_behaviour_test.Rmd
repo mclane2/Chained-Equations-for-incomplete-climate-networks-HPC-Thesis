@@ -66,10 +66,10 @@ Plot 1: Internal Convergence
 ```{r plot-convergence, fig.width=8, fig.height=5}
 xlim_range <- c(1, max(length(rmse_seq), length(rmse_sync)))
 
-plot(rmse_seq, type = "b", col = "blue", pch = 16, log = "y",
+plot(rmse_seq, type = "b", col = "blue", pch = 16,
      xlim = xlim_range,
      ylim = range(c(rmse_seq, rmse_sync)),
-     xlab = "Cycle", ylab = "Internal RMSE (between cycles, log scale)",
+     xlab = "Cycle", ylab = "Internal RMSE (between cycles)",
      main = "Internal convergence: sequential vs synchronous")
 lines(rmse_sync, type = "b", col = "red", pch = 17)
 legend("topright", legend = c("Sequential", "Synchronous"),
@@ -84,7 +84,7 @@ xlim_range <- c(1, max(length(ext_rmse_seq), length(ext_rmse_sync)))
 plot(ext_rmse_seq, type = "b", col = "blue", pch = 16,
      xlim = xlim_range,
      ylim = range(c(ext_rmse_seq, ext_rmse_sync)),
-     xlab = "Cycle", ylab = "Validation RMSE (log scale)",
+     xlab = "Cycle", ylab = "Validation RMSE",
      main = "Validation RMSE convergence: sequential vs synchronous")
 lines(ext_rmse_sync, type = "b", col = "red", pch = 17)
 legend("topright", legend = c("Sequential", "Synchronous"),
