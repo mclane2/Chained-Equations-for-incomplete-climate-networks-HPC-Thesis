@@ -1,33 +1,53 @@
 # ENCE - C Implementation Test
 
 In the directory `elastic_net_C_implementation`, I implemented my own version of `glmnet` (elastic net regressor) written in C (this will allow me to use OpenMP later). 
-This document runs a very rough and quick accuracy and timing comparison between the original `glmnet`-based ENCE and the C version
 
+This file investigates if the C implementation of the coordinate descent recreates the same result as glmnet
 ## Setup
 
-Load the simulated data
+Load the Met Eireann daily data (not available in this Github repo)
 
 ```{r setup, message=FALSE}
 source("idw.R")
 source("elastic_net_C_implementation/elastic_net_R_glue.R")
 
-#n_stations <- 50
-#n_months   <- 60
+# Load Met Eireann daily data and station geodata file
+rain     <- read.csv("../met_eireann_daily_data/daily_rainfall_2016.csv")
+stations <- read.csv("../met_eireann_daily_data/station_geodata.csv")
 
-rain <- read.csv("simulated_rainfall.csv")
-#rain <- rain[rain$stno <= n_stations & rain$t <= n_months, ]   # small subset for now
+# Attach coordinates to each daily observation
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)#
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Adds a completeness column = observed days / 366.
+obs_per_station$completeness <- obs_per_station$n_obs / 366
+
+# Apply the % cutoff
+cutoff <- 0.50
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Then mask a fraction of the currently-observed cells
+set.seed(541)
+observed_idx <- which(!is.na(rain$y))
+masked_idx   <- sort(sample(observed_idx, length(observed_idx) * 0.25))
+
+df_miss <- rain
+df_miss$y[masked_idx] <- NA           # hide masked
 ```
 
 ## Imputation
-
-Mask 25% of the data uniformly at random and run both variants from the same starting point.
-
-```{r make-missing}
-df_miss <- rain
-set.seed(313)
-sample_rows <- sort(sample(nrow(df_miss), nrow(df_miss) * 0.25))
-df_miss[sample_rows, "y"] <- NA
-```
 
 Run the original `glmnet`-based ENCE first, then the C-version on the same masked data.
 
@@ -40,7 +60,7 @@ time_glmnet <- system.time({
                      C = 15000,
                      transformation = sqrt,
                      reverse_transformation = function(x) x^2,
-                     truth = rain$y, masked_idx = sample_rows)
+                     truth = rain$y, masked_idx = masked_idx)
 })
 ext_rmse_glmnet <- attr(imp_glmnet, "ext_rmse_history")
 ```
@@ -54,7 +74,7 @@ time_c <- system.time({
                 C = 15000,
                 transformation = sqrt,
                 reverse_transformation = function(x) x^2,
-                truth = rain$y, masked_idx = sample_rows)
+                truth = rain$y, masked_idx = masked_idx)
 })
 ext_rmse_c <- attr(imp_c, "ext_rmse_history")
 ```
@@ -74,7 +94,7 @@ Final external RMSE (predicted vs. true rainfall at the masked locations):
 
 ```{r final-rmse}
 cat("glmnet final ext_rmse: ", round(tail(ext_rmse_glmnet, 1), 4), "\n")
-cat("C      final ext_rmse: ", round(tail(ext_rmse_c, 1), 4),       "\n")
+cat("C final ext_rmse: ", round(tail(ext_rmse_c, 1), 4),       "\n")
 ```
 
 Per-cycle external RMSE trajectory:
@@ -93,11 +113,28 @@ legend("topright", legend = c("glmnet", "C"),
 
 ### Agreement between the two implementations
 
-
 ```{r imputation-agreement}
-pred_glmnet <- as.numeric(unlist(imp_glmnet[sample_rows, "y"]))
-pred_c      <- as.numeric(unlist(imp_c[sample_rows, "y"]))
+pred_glmnet <- as.numeric(unlist(imp_glmnet[masked_idx, "y"]))
+pred_c <- as.numeric(unlist(imp_c[masked_idx, "y"]))
 imp_diff_rmse <- sqrt(mean((pred_glmnet - pred_c)^2))
 cat("RMSE between glmnet and C imputations at masked rows:", round(imp_diff_rmse, 4), "\n")
 ```
 
+### Calculating Bias and R^2
+```{r R^2 and Bias}
+truth_masked <- rain$y[masked_idx]
+pred_glmnet <- as.numeric(unlist(imp_glmnet[masked_idx, "y"]))
+pred_c <- as.numeric(unlist(imp_c[masked_idx, "y"]))
+
+bias_glmnet <- mean(pred_glmnet - truth_masked)
+bias_c <- mean(pred_c - truth_masked)
+
+ss_tot <- sum((truth_masked - mean(truth_masked))^2)
+r2_glmnet <- 1 - sum((truth_masked - pred_glmnet)^2) / ss_tot
+r2_c <- 1 - sum((truth_masked - pred_c)^2)      / ss_tot
+
+cat("glmnet bias: ", round(bias_glmnet, 4), "\n")
+cat("C bias: ", round(bias_c, 4), "\n")
+cat("glmnet R^2: ", round(r2_glmnet,   4), "\n")
+cat("C R^2: ", round(r2_c, 4), "\n")
+```

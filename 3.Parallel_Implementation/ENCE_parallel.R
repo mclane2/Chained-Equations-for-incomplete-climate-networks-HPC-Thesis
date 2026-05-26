@@ -179,7 +179,7 @@ ENCE <- function(df, response = "y",
 # Updated ENCE_impute for allowing parallel iterations
 # Matrix df is only updated after all the columns are updated (loop iterations are now independant)
 ENCE_impute_parallel <- function(df, missing_idx, ls = NA, as = NA,
-                                 n_cores = parallel::detectCores() - 1, ...){
+                                 n_cores = 6, ...){
   # df              -Input data
   # missing_idx     -Index of all originally missing values
   # ls              -Initial lambda parameters for all imputation models

@@ -32,9 +32,6 @@ names(rain)[5] <- "y"
 # Sorts the table in place by stno, then t
 rain <- rain[order(rain$stno, rain$t), ]
 
-head(rain)
-str(rain)
-
 # Compute missingness per station
 # Counts the number of observed days per station
 obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)#
@@ -53,7 +50,6 @@ set.seed(541)
 observed_idx <- which(!is.na(rain$y))
 masked_idx   <- sort(sample(observed_idx, length(observed_idx) * 0.25))
 
-truth   <- rain$y                     # ground truth at masked cells
 df_miss <- rain
 df_miss$y[masked_idx] <- NA           # hide masked
 ```
@@ -71,7 +67,7 @@ imp_par <- ENCE(df_miss, response = "y", max_cycles = 30,
                 C = 15000,
                 transformation = sqrt,
                 reverse_transformation = function(x) x^2,
-                truth = truth, masked_idx = masked_idx)
+                truth = rain$y, masked_idx = masked_idx)
 rmse_par     <- attr(imp_par, "rmse_history")
 ext_rmse_par <- attr(imp_par, "ext_rmse_history")
 t_par <- Sys.time() - t0
@@ -85,7 +81,7 @@ imp_sync <- ENCE(df_miss, response = "y", max_cycles = 30,
                  C = 15000,
                  transformation = sqrt,
                  reverse_transformation = function(x) x^2,
-                 truth = truth, masked_idx = masked_idx)
+                 truth = rain$y, masked_idx = masked_idx)
 rmse_sync <- attr(imp_sync, "rmse_history")
 ext_rmse_sync <- attr(imp_sync, "ext_rmse_history")
 t_ser <- Sys.time() - t0
@@ -138,20 +134,3 @@ legend("topright", legend = c("Parallel", "Synchronous"),
 ```
 
 
-
-## Data summary
-
-```{r data-summary}
-cat(sprintf("Stations: %d\n", length(unique(rain$stno))))
-cat(sprintf("Rows:     %d\n", nrow(rain)))
-cat(sprintf("NAs:      %d (%.1f%%)\n", sum(is.na(rain$y)), 100 * mean(is.na(rain$y))))
-
-na_per_station <- aggregate(is.na(rain$y), list(stno = rain$stno), sum)
-summary(na_per_station$x)
-
-cat(sprintf("Stations: %d\n", length(unique(rain$stno))))
-cat(sprintf("Rows:     %d\n", nrow(rain)))
-cat(sprintf("Real NAs:    %d (%.1f%%)\n", sum(is.na(rain$y)), 100 * mean(is.na(rain$y))))
-cat(sprintf("Masked:      %d (%.1f%% of observed)\n", length(masked_idx), 100 * length(masked_idx) / sum(!is.na(rain$y))))
-cat(sprintf("ENCE sees:   %d NAs total (%.1f%%)\n", sum(is.na(df_miss$y)), 100 * mean(is.na(df_miss$y))))
-```

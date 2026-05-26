@@ -32,9 +32,6 @@ names(rain)[5] <- "y"
 # Sorts the table in place by stno, then t
 rain <- rain[order(rain$stno, rain$t), ]
 
-head(rain)
-str(rain)
-
 # Compute missingness per station
 # Counts the number of observed days per station
 obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)#

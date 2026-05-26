@@ -15,13 +15,16 @@
 
 SEXP elastic_net_fit_R(SEXP Z_sexp, SEXP z_sexp, SEXP lambda_sexp, SEXP alpha_sexp, SEXP thresh_sexp, SEXP maxit_sexp)
 {
+    /* Matrix dimensions */
     int n = nrows(Z_sexp);
     int p = ncols(Z_sexp);
 
-    /* beta is returned to R, so allocate as an R vector */
+    /* Beta is returned to R, so allocate as an R vector */
+    /* All allocated vectors must be protected */
     SEXP beta_sexp = PROTECT(allocVector(REALSXP, p));
     double intercept;
 
+    /* Function call */
     elastic_net_fit(REAL(Z_sexp), REAL(z_sexp), n, p, asReal(lambda_sexp), asReal(alpha_sexp), asReal(thresh_sexp), asInteger(maxit_sexp), REAL(beta_sexp), &intercept);
 
     SEXP result = PROTECT(allocVector(VECSXP, 2));
@@ -32,6 +35,8 @@ SEXP elastic_net_fit_R(SEXP Z_sexp, SEXP z_sexp, SEXP lambda_sexp, SEXP alpha_se
     SET_STRING_ELT(names, 1, mkChar("beta"));
     setAttrib(result, R_NamesSymbol, names);
 
+
+    /* Unprotect the 3 allocated vectors */
     UNPROTECT(3);
     return result;
 }
