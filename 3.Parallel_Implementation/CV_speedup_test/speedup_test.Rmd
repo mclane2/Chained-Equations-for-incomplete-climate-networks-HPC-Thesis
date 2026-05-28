@@ -1,0 +1,98 @@
+# Speedup Test
+
+Checking how much faster what I've done so far is compared to the original code which used R parallelism for CV.
+
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo)
+
+```{r setup, message=FALSE}
+source("idw.R")
+source("ENCE_parallel.R")      # synchronous (parallel) updates
+source("ENCE.R")   # Brian's original code
+
+# Load Met Eireann daily data and station geodata file
+rain     <- read.csv("~/HPC_Thesis/met_eireann_daily_data/daily_rainfall_2016.csv")
+stations <- read.csv("~/HPC_Thesis/met_eireann_daily_data/station_geodata.csv")
+
+# Attach coordinates to each daily observation
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)#
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Adds a completeness column = observed days / 366.
+obs_per_station$completeness <- obs_per_station$n_obs / 366
+
+# Apply the % cutoff
+cutoff <- 0.50
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Then mask a fraction of the currently-observed cells
+set.seed(541)
+observed_idx <- which(!is.na(rain$y))
+masked_idx   <- sort(sample(observed_idx, length(observed_idx) * 0.25))
+
+df_miss <- rain
+df_miss$y[masked_idx] <- NA           # hide masked
+```
+
+## Run the original
+
+```{r run-original, message=FALSE, results='hide'}
+source("idw.R")
+source("ENCE.R")   # Brian's original; needs `...` added to column_impute
+
+n_cores    <- parallel::detectCores() - 1
+
+t0 <- Sys.time()
+imp_orig <- ENCE(df_miss, response = "y",
+                 max_cycles = 30,
+                 nclusters = 4,
+                 init_method = "idw",
+                 x_name = "east", y_name = "north", t_name = "t",
+                 C = 15000,
+                 transformation = sqrt,
+                 reverse_transformation = function(x) x^2)
+t_orig <- Sys.time() - t0
+```
+
+## Run the station-parallel version
+
+```{r run-parallel, message=FALSE, results='hide'}
+source("ENCE_parallel.R")
+
+t0 <- Sys.time()
+imp_par <- ENCE(df_miss, response = "y",
+                max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                n_cores = n_cores)
+t_par <- Sys.time() - t0
+```
+
+## Compare
+
+```{r compare}
+t_orig_s <- as.numeric(t_orig, units = "secs")
+t_par_s  <- as.numeric(t_par,  units = "secs")
+
+cat(sprintf("Cores:      %d\n\n", n_cores))
+
+cat(sprintf("Original:     %.2f s\n", t_orig_s))
+cat(sprintf("Parallel:     %.2f s\n", t_par_s))
+cat(sprintf("Speedup:      %.2fx\n\n", t_orig_s / t_par_s))
+```
