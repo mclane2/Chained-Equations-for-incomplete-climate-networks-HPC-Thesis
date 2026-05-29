@@ -2,32 +2,30 @@
 
 # Filename: build.sh
 #
-# Description: 
-# Compiles the C source files (elastic_net_functions.c, elastic_net.c, elastic_net_R_wrapper.c) into elastic_net.so (an R-loadable shared library) via R CMD SHLIB. 
-# Cleans build artefacts before compilation and removes intermediate object files after a successful build.
+# Description:
+# Compiles the C source files into ENCE_impute.so (an R-loadable shared library)
+# via R CMD SHLIB, with OpenMP enabled. Cleans build artefacts before compilation
+# and removes object files after a successful build.
 #
 # To Compile input:
 # chmod +x build.sh
 # ./build.sh
 #
 # Author: M. Lane
-# Version: 1.0
-# Date: 2026-05-15
+# Version: 2.0
+# Date: 2026-05-29
 
-# Exits on command failure or if any stage of pipeline fails
 set -euo pipefail
 
 # Clean directory before compiling
 rm -f *.o *.so
 
-# Compiling into .so file
-R CMD SHLIB -o elastic_net.so \
-    elastic_net_R_wrapper.c \
-    elastic_net.c \
-    elastic_net_functions.c
+# Compile + link with OpenMP.
+PKG_CFLAGS="-fopenmp -O2" PKG_LIBS="-fopenmp" \
+R CMD SHLIB elastic_net_functions.c elastic_net.c ENCE_impute.c elastic_net_R_wrapper.c \
+  -o ENCE_impute.so
 
 # Clean up .o files
 rm -f *.o
 
-# Print success message
-echo "Built elastic_net.so"
+echo "Built ENCE_impute.so"
