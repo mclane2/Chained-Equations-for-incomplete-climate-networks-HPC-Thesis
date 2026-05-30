@@ -111,6 +111,9 @@ ENCE <- function(df, response = "y",
   ls_history <- list()
   as_history <- list()
 
+  # Track parallel synchronous cycle update time per cycle
+  update_time_history <- c()
+
   # Loop through imputation cycle multiple times
   while((i <= max_cycles) & ((old_rmse/new_rmse > tol) | (i == 1))){
     
@@ -119,8 +122,13 @@ ENCE <- function(df, response = "y",
     old_rmse <- new_rmse
     
     # Compute imputed values and update lambdas/alphas
-    imputed_df <- ence_impute_cycle(df, missing_idx, folds, ls, as,
-                                    nfolds = nfolds, nthreads = nthreads)
+    cycle_time <- system.time({
+      imputed_df <- ence_impute_cycle(df, missing_idx, folds, ls, as,
+                                      nfolds = nfolds, nthreads = nthreads)
+    })["elapsed"]
+
+    update_time_history <- c(update_time_history, cycle_time)
+
     df        <- as.data.frame(imputed_df$df)
     # restore wide-table names
     names(df) <- col_names
@@ -183,6 +191,7 @@ ENCE <- function(df, response = "y",
 
   attr(df, "ls_history") <- ls_history
   attr(df, "as_history") <- as_history
+  attr(df, "update_time_history") <- update_time_history
 
   return(df)
 }

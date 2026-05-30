@@ -1,0 +1,80 @@
+# ENCE - OpenMP Strong Scaling Test
+
+In the directory `elastic_net_C_implementation`, I implemented my own version of glmnet (elastic net regressor) written in C with OpenMP parallelism.
+
+This file measures the strong-scaling behaviour of the parallel synchronous update.
+
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo)
+
+```{r setup, message=FALSE}
+source("idw.R")
+source("elastic_net_C_implementation/elastic_net_R_glue.R")
+
+# Load Met Eireann daily data and station geodata file
+rain     <- read.csv("../met_eireann_daily_data/daily_rainfall_2016.csv")
+stations <- read.csv("../met_eireann_daily_data/station_geodata.csv")
+
+# Attach coordinates to each daily observation
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Missingness per station and the 50% completeness cutoff
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)
+names(obs_per_station) <- c("stno", "n_obs")
+obs_per_station$completeness <- obs_per_station$n_obs / 366
+
+cutoff <- 0.50
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Mask 25% of the observed cells
+set.seed(543)
+observed_idx <- which(!is.na(rain$y))
+masked_idx   <- sort(sample(observed_idx, length(observed_idx) * 0.25))
+
+df_miss <- rain
+df_miss$y[masked_idx] <- NA
+```
+
+## Run
+
+```{r benchmark, message=FALSE, results='hide'}
+source("ENCE_myelasticnet.R")
+
+thread_counts <- c(1, 2, 4, 6)
+kernel_time   <- numeric(length(thread_counts))
+
+# Strong scaling loop
+for (k in seq_along(thread_counts)) {
+  imp <- ENCE(df_miss, response = "y", max_cycles = 30, init_method = "idw",
+              x_name = "east", y_name = "north", t_name = "t", C = 15000,
+              transformation = sqrt, reverse_transformation = function(x) x^2,
+              nthreads = thread_counts[k])
+  kernel_time[k] <- sum(attr(imp, "update_time_history"))
+}
+```
+
+## Results
+
+### Speedup
+
+```{r results}
+speedup    <- kernel_time[1] / kernel_time
+efficiency <- speedup / thread_counts
+data.frame(threads = thread_counts, kernel_time, speedup, efficiency)
+```
+
+```{r speedup-plot, fig.width=7, fig.height=5}
+plot(thread_counts, speedup, type = "b", pch = 16, col = "red",
+     xlim = c(1, max(thread_counts)), ylim = c(1, max(thread_counts)),
+     xlab = "Threads", ylab = "Speedup", main = "Strong scaling")
+abline(0, 1, lty = 2)
+```

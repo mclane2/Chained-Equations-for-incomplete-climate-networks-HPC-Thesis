@@ -1,6 +1,6 @@
 # ENCE - C Implementation Test
 
-In the directory `elastic_net_C_implementation`, I implemented my own version of `glmnet` (elastic net regressor) written in C (this will allow me to use OpenMP later). 
+In the directory `elastic_net_C_implementation`, I implemented my own version of glmnet (elastic net regressor) written in C with OpenMP parallelism. 
 
 This file investigates if the C implementation of the coordinate descent recreates the same result as glmnet
 ## Setup
@@ -49,7 +49,22 @@ df_miss$y[masked_idx] <- NA           # hide masked
 
 ## Imputation
 
-Run the original `glmnet`-based ENCE first, then the C-version on the same masked data.
+Run the original glmnet-based ENCE and the C-version on the same masked data.
+
+```{r run-c, message=FALSE, results='hide'}
+source("ENCE_myelasticnet.R")
+time_c <- system.time({
+  imp_c <- ENCE(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = masked_idx,
+                nthreads = 1)
+})
+ext_rmse_c <- attr(imp_c, "ext_rmse_history")
+```
 
 ```{r run-glmnet, message=FALSE, results='hide'}
 source("ENCE_glmnet.R")
@@ -65,19 +80,6 @@ time_glmnet <- system.time({
 ext_rmse_glmnet <- attr(imp_glmnet, "ext_rmse_history")
 ```
 
-```{r run-c, message=FALSE, results='hide'}
-source("ENCE_myelasticnet.R")
-time_c <- system.time({
-  imp_c <- ENCE(df_miss, response = "y", max_cycles = 30,
-                init_method = "idw",
-                x_name = "east", y_name = "north", t_name = "t",
-                C = 15000,
-                transformation = sqrt,
-                reverse_transformation = function(x) x^2,
-                truth = rain$y, masked_idx = masked_idx)
-})
-ext_rmse_c <- attr(imp_c, "ext_rmse_history")
-```
 
 ## Results
 

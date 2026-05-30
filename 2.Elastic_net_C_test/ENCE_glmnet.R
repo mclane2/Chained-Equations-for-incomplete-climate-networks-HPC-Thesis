@@ -240,7 +240,7 @@ column_impute <- function(covariates, target, missing_values,
     # Lambda/alpha need to be fit if not provided
     if (is.na(lambda)){
       
-      set.seed(222)
+      set.seed(323)
       # Fit E-Net with CV to fit lambda and alpha
       model <- cva.glmnet(x = x[!ymiss, ], y = y[!ymiss], 
                           lambda = lambdas, alpha = alphas)
