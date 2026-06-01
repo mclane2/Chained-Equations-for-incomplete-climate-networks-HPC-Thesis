@@ -1,0 +1,94 @@
+# ENCE - Daily Data test
+
+I found previously that ENCE converges for the daily data, but I never fully investigated how well the imputation is performing.
+
+Further details of ENCE can be found in the study at <https://doi.org/10.1002/joc.8513> The data that support the findings of this study are available upon reasonable request to the author(s) and with the permission of Met Éireann, Ireland's meteorological office.
+
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo)
+
+```{r setup, message=FALSE}
+source("idw.R")
+source("ENCE_parallel.R")      # synchronous (parallel) updates
+
+# Load Met Eireann daily data and station geodata file
+rain     <- read.csv("../met_eireann_daily_data/daily_rainfall_2016.csv")
+stations <- read.csv("../met_eireann_daily_data/station_geodata.csv")
+
+# Attach coordinates to each daily observation
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)#
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Adds a completeness column = observed days / 366.
+obs_per_station$completeness <- obs_per_station$n_obs / 366
+
+# Apply the % cutoff
+cutoff <- 0.50
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Then mask a fraction of the currently-observed cells
+set.seed(541)
+observed_idx <- which(!is.na(rain$y))
+masked_idx   <- sort(sample(observed_idx, length(observed_idx) * 0.25))
+
+df_miss <- rain
+df_miss$y[masked_idx] <- NA           # hide masked
+```
+
+## Imputation
+Comparing ENCE (with glmnet) with IDW
+
+```{r impute-idw, message=FALSE}
+# IDW baseline
+obs    <- df_miss[!is.na(df_miss$y), ]
+target <- rain[masked_idx, ]
+idw_out <- IDW_ST(obs, target, response = "y",
+                  x_name = "east", y_name = "north", t_name = "t",
+                  C = 15000,
+                  transformation = sqrt,
+                  reverse_transformation = function(x) x^2)
+```
+
+```{r impute-ENCE, message=FALSE}
+# ENCE on the masked data
+imp <- ENCE(df_miss, response = "y", max_cycles = 30,
+            init_method = "idw",
+            x_name = "east", y_name = "north", t_name = "t",
+            C = 15000,
+            transformation = sqrt,
+            reverse_transformation = function(x) x^2,
+            truth = rain$y, masked_idx = masked_idx)
+```
+
+
+## Validation
+```{r metrics}
+y_true  <- rain$y[masked_idx]
+ence_y  <- imp$y[masked_idx]
+idw_y   <- idw_out$y
+
+# ENCE
+cat("ENCE\n")
+cat("RMSE:", sqrt(mean((ence_y - y_true)^2)), "\n")
+cat("Bias %:", sum(ence_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:", 1 - sum((ence_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n\n")
+
+# IDW
+cat("IDW\n")
+cat("RMSE:", sqrt(mean((idw_y - y_true)^2)), "\n")
+cat("Bias %:", sum(idw_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:", 1 - sum((idw_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+```
