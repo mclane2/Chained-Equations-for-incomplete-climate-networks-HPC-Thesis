@@ -1,0 +1,86 @@
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo)
+
+```{r setup, message=FALSE}
+source("idw.R")
+source("ENCE_parallel.R")      # synchronous (parallel) updates
+
+# Load Met Eireann daily data and station geodata file
+rain     <- read.csv("../met_eireann_daily_data/daily_rainfall_2016.csv")
+stations <- read.csv("../met_eireann_daily_data/station_geodata.csv")
+
+# Attach coordinates to each daily observation
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)#
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Adds a completeness column = observed days / 366.
+obs_per_station$completeness <- obs_per_station$n_obs / 366
+
+# Apply the % cutoff
+cutoff <- 0.50
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Then mask a fraction of the currently-observed cells
+set.seed(541)
+observed_idx <- which(!is.na(rain$y))
+masked_idx   <- sort(sample(observed_idx, length(observed_idx) * 0.25))
+
+df_miss <- rain
+df_miss$y[masked_idx] <- NA           # hide masked
+```
+
+## Imputation
+
+Run standard ENCE and ENCE with temporal lag-1 column in predictor matrix
+
+```{r impute-ENCE, message=FALSE}
+# ENCE on the masked data
+imp <- ENCE(df_miss, response = "y", max_cycles = 30,
+            init_method = "idw",
+            x_name = "east", y_name = "north", t_name = "t",
+            C = 15000,
+            transformation = sqrt,
+            reverse_transformation = function(x) x^2,
+            truth = rain$y, masked_idx = masked_idx)
+```
+
+```{r impute-ENCE, message=FALSE}
+# ENCE on the masked data
+imp <- ENCE(df_miss, response = "y", max_cycles = 30,
+            init_method = "idw",
+            x_name = "east", y_name = "north", t_name = "t",
+            C = 15000,
+            transformation = sqrt,
+            reverse_transformation = function(x) x^2,
+            truth = rain$y, masked_idx = masked_idx)
+```
+
+## Results
+
+```{r test}
+R <- attr(imp, "residuals")
+
+# count how many real residuals each station has
+n_obs    <- colSums(!is.na(R))
+# sorts from highest to lowest
+complete <- names(sort(n_obs, decreasing = TRUE))
+
+# acf function computes residuals for lag 0-30 and automatically plots
+par(mfrow = c(2, 2))
+for (s in complete[1:4]) {
+  acf(R[, s], lag.max = 30, na.action = na.pass, main = paste("Station", s))
+}
+```

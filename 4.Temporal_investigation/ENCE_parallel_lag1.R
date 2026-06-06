@@ -13,6 +13,8 @@
 ## must be included, missing or non-missing, and duplicate 
 ## combinations are not allowed
 
+## Includes lag-1 temporal correlations in the predictor matrix
+
 
 ENCE <- function(df, response = "y",
                  hyp_cycles = 2,
@@ -180,7 +182,9 @@ ENCE <- function(df, response = "y",
 
 # One single imputation cycle for all spatial locations
 # Updated ENCE_impute for allowing parallel iterations
-# Matrix df is only updated after all the columns are updated (loop iterations are now independant)
+# Matrix df is only updated after all the columns are updated
+# (loop iterations are now independant)
+# Includes lag-1 temporal updates in predictor matrix
 ENCE_impute_parallel <- function(df, missing_idx, ls = NA, as = NA,
                                  n_cores = 6, ...){
   # df              -Input data
@@ -199,6 +203,13 @@ ENCE_impute_parallel <- function(df, missing_idx, ls = NA, as = NA,
     target         <- df_old[, column]
     covariates     <- df_old[, -column]
     missing_values <- missing_idx[, column]
+
+    # lag-1 of the target's own series (wide rows are already in time order)
+    tvec <- unlist(target)
+    target_lag1 <- c(NA, tvec[-length(tvec)])
+    target_lag1[1] <- mean(tvec, na.rm = TRUE)
+    covariates[["target_lag1"]] <- target_lag1
+
 
     # Impute the target station
     column_impute(covariates, target, missing_values, ls[column], as[column])
