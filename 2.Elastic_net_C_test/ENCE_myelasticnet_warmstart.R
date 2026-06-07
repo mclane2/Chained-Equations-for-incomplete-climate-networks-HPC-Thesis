@@ -125,7 +125,7 @@ ENCE <- function(df, response = "y",
     
     # Compute imputed values and update lambdas/alphas
     cycle_time <- system.time({
-      imputed_df <- ence_impute_cycle(df, missing_idx, folds, ls, as,
+      imputed_df <- ence_impute_cycle_warmstart(df, missing_idx, folds, ls, as,
                                       nfolds = nfolds, nthreads = nthreads)
     })["elapsed"]
 
