@@ -1,0 +1,151 @@
+# ENCE - Overall Speedup
+
+This file checks the speedup going from 1. The original ENCE implementation, 2. synchronous R-parallel updates (with glmnet) and 3. sychronous updates with my C implementation of glmnet
+
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo)
+
+```{r setup, message=FALSE}
+source("idw.R")
+source("elastic_net_C_implementation_optimize/elastic_net_R_glue.R")
+
+# Load Met Eireann daily data and station geodata file
+rain     <- read.csv("../met_eireann_daily_data/daily_rainfall_2016.csv")
+stations <- read.csv("../met_eireann_daily_data/station_geodata.csv")
+
+# Attach coordinates to each daily observation
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)#
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Adds a completeness column = observed days / 366.
+obs_per_station$completeness <- obs_per_station$n_obs / 366
+
+# Apply the % cutoff
+cutoff <- 0.50
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Then mask a fraction of the currently-observed cells
+set.seed(541)
+observed_idx <- which(!is.na(rain$y))
+masked_idx   <- sort(sample(observed_idx, length(observed_idx) * 0.25))
+
+df_miss <- rain
+df_miss$y[masked_idx] <- NA           # hide masked
+```
+
+## Imputation
+```{r run-original, message=FALSE, results='hide'}
+source("ENCE_original.R")
+time_original <- system.time({
+  imp_original <- ENCE(df_miss, response = "y", max_cycles = 30,
+                     init_method = "idw",
+                     x_name = "east", y_name = "north", t_name = "t",
+                     C = 15000,
+                     transformation = sqrt,
+                     reverse_transformation = function(x) x^2,
+                     truth = rain$y, masked_idx = masked_idx)
+})
+ext_rmse_original <- attr(imp_original, "ext_rmse_history")
+```
+
+```{r run-R, message=FALSE, results='hide'}
+source("ENCE_R_parallel.R")
+time_R <- system.time({
+  imp_R <- ENCE(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = masked_idx,
+                n_cores = 6)
+})
+ext_rmse_R<- attr(imp_R, "ext_rmse_history")
+```
+
+```{r run-C, message=FALSE, results='hide'}
+source("ENCE_C_parallel.R")
+time_C <- system.time({
+  imp_C <- ENCE(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = masked_idx,
+                nthreads = 6)
+})
+ext_rmse_C <- attr(imp_C, "ext_rmse_history")
+```
+
+## Results
+
+### Timing
+
+```{r timing}
+cat("Original version:   ", round(time_original["elapsed"], 2), "seconds\n")
+cat("R-Parallel version (6 threads):", round(time_R["elapsed"], 2), "seconds\n")
+cat("C Implementation version (6 threads):", round(time_C["elapsed"], 2), "seconds\n")
+```
+
+```{r speedup}
+t_orig <- time_original["elapsed"]
+t_R    <- time_R["elapsed"]
+t_C    <- time_C["elapsed"]
+
+cat("Speedup, original -> R parallel:", round(t_orig / t_R, 1), "x\n")
+cat("Speedup, original -> C:         ", round(t_orig / t_C, 1), "x\n")
+cat("Speedup, R parallel -> C:       ", round(t_R / t_C, 1), "x\n")
+```
+
+### Accuracy against truth
+
+Final external RMSE (predicted vs. true rainfall at the masked locations):
+
+```{r final-rmse}
+cat("R parallel final ext_rmse: ", round(tail(ext_rmse_R, 1), 4), "\n")
+cat("C implementation final ext_rmse: ", round(tail(ext_rmse_C, 1), 4), "\n")
+```
+
+## Validation
+```{r metrics}
+y_true     <- rain$y[masked_idx]
+original_y <- imp_original$y[masked_idx]
+R_y        <- imp_R$y[masked_idx]
+C_y        <- imp_C$y[masked_idx]
+
+cat("Original (serial)\n")
+cat("RMSE:",   sqrt(mean((original_y - y_true)^2)), "\n")
+cat("Bias %:", sum(original_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((original_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((original_y - y_true)^2)) / mean(y_true), "\n\n")
+
+cat("R parallel (synchronous, glmnet)\n")
+cat("RMSE:",   sqrt(mean((R_y - y_true)^2)), "\n")
+cat("Bias %:", sum(R_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((R_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((R_y - y_true)^2)) / mean(y_true), "\n\n")
+
+cat("C implementation (synchronous)\n")
+cat("RMSE:",   sqrt(mean((C_y - y_true)^2)), "\n")
+cat("Bias %:", sum(C_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((C_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((C_y - y_true)^2)) / mean(y_true), "\n\n")
+
+cat("R vs original max abs diff:", max(abs(R_y - original_y)), "\n")
+cat("C vs original max abs diff:", max(abs(C_y - original_y)), "\n")
+cat("C vs R max abs diff:",        max(abs(C_y - R_y)), "\n")
+```
