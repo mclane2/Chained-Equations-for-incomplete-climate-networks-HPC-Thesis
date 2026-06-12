@@ -11,6 +11,8 @@ Load the Met Eireann daily data (not available in this Github repo)
 source("idw.R")
 source("elastic_net_C_implementation/elastic_net_R_glue.R")
 source("elastic_net_C_implementation_warm_start/elastic_net_R_glue.R")
+source("elastic_net_C_implementation_active/elastic_net_R_glue.R")
+source("elastic_net_C_implementation_optimize/elastic_net_R_glue.R")
 
 # Load Met Eireann daily data and station geodata file
 rain     <- read.csv("../met_eireann_daily_data/daily_rainfall_2016.csv")
@@ -50,7 +52,9 @@ df_miss$y[masked_idx] <- NA           # hide masked
 
 ## Imputation
 
-Run the original glment, my C-version and the warm start optimization on the same masked data.
+Run the original glmnet, my C-version, the warm start optimization version, active set+warm start version and warmstart+activeset+ compiler flag and SIMD versions on the same masked data.
+
+
 ```{r run-glmnet, message=FALSE, results='hide'}
 source("ENCE_glmnet.R")
 time_glmnet <- system.time({
@@ -63,21 +67,6 @@ time_glmnet <- system.time({
                      truth = rain$y, masked_idx = masked_idx)
 })
 ext_rmse_glmnet <- attr(imp_glmnet, "ext_rmse_history")
-```
-
-```{r run-c, message=FALSE, results='hide'}
-source("ENCE_myelasticnet.R")
-time_c <- system.time({
-  imp_c <- ENCE(df_miss, response = "y", max_cycles = 30,
-                init_method = "idw",
-                x_name = "east", y_name = "north", t_name = "t",
-                C = 15000,
-                transformation = sqrt,
-                reverse_transformation = function(x) x^2,
-                truth = rain$y, masked_idx = masked_idx,
-                nthreads = 6)
-})
-ext_rmse_c <- attr(imp_c, "ext_rmse_history")
 ```
 
 ```{r run-c_1core, message=FALSE, results='hide'}
@@ -95,20 +84,6 @@ time_c_single <- system.time({
 ext_rmse_c_single <- attr(imp_c_single, "ext_rmse_history")
 ```
 
-```{r run-warmstart, message=FALSE, results='hide'}
-source("ENCE_myelasticnet_warmstart.R")
-time_warmstart <- system.time({
-  imp_warmstart <- ENCE(df_miss, response = "y", max_cycles = 30,
-                init_method = "idw",
-                x_name = "east", y_name = "north", t_name = "t",
-                C = 15000,
-                transformation = sqrt,
-                reverse_transformation = function(x) x^2,
-                truth = rain$y, masked_idx = masked_idx,
-                nthreads = 6)
-})
-ext_rmse_warmstart <- attr(imp_warmstart, "ext_rmse_history")
-```
 
 ```{r run-warmstart_1core, message=FALSE, results='hide'}
 source("ENCE_myelasticnet_warmstart.R")
@@ -125,16 +100,47 @@ time_warmstart_single <- system.time({
 ext_rmse_warmstart_single <- attr(imp_warmstart_single, "ext_rmse_history")
 ```
 
+```{r run-active_1core, message=FALSE, results='hide'}
+source("ENCE_myelasticnet_active.R")
+time_active_single <- system.time({
+  imp_active_single <- ENCE(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = masked_idx,
+                nthreads = 1)
+})
+ext_rmse_active_single <- attr(imp_active_single, "ext_rmse_history")
+```
+
+```{r run-optimized_1core, message=FALSE, results='hide'}
+source("ENCE_myelasticnet_optimize.R")
+time_optimize_single <- system.time({
+  imp_optimize_single <- ENCE(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = masked_idx,
+                nthreads = 1)
+})
+ext_rmse_optimize_single <- attr(imp_optimize_single, "ext_rmse_history")
+```
+
+
 ## Results
 
 ### Timing
 
 ```{r timing}
 cat("glmnet version:   ", round(time_glmnet["elapsed"], 2), "seconds\n")
-cat("C version (6 threads):", round(time_c["elapsed"], 2),       "seconds\n")
-cat("C version (1 thread):", round(time_c_single["elapsed"], 2),       "seconds\n")
-cat("Warmstart version (6 threads):", round(time_warmstart["elapsed"], 2), "seconds\n")
+cat("C version (1 thread):", round(time_c_single["elapsed"], 2), "seconds\n")
 cat("Warmstart version (1 thread):", round(time_warmstart_single["elapsed"], 2), "seconds\n")
+cat("Warmstart+active version:   ", round(time_active_single["elapsed"], 2), "seconds\n")
+cat("Warmstart+active+optimized version:   ", round(time_optimize_single["elapsed"], 2), "seconds\n")
 ```
 
 ### Accuracy against truth
@@ -143,20 +149,20 @@ Final external RMSE (predicted vs. true rainfall at the masked locations):
 
 ```{r final-rmse}
 cat("glmnet final ext_rmse: ", round(tail(ext_rmse_glmnet, 1), 4), "\n")
-cat("C final ext_rmse (6 threads): ", round(tail(ext_rmse_c, 1), 4),"\n")
 cat("C final ext_rmse (1 thread): ", round(tail(ext_rmse_c_single, 1), 4),"\n")
-cat("Warm start final ext_rmse (6 threads): ", round(tail(ext_rmse_warmstart, 1), 4),"\n")
 cat("Warm start final ext_rmse (1 thread): ", round(tail(ext_rmse_warmstart_single, 1), 4),"\n")
+cat("Warm start+active final ext_rmse (1 thread): ", round(tail(ext_rmse_active_single, 1), 4),"\n")
+cat("Warm start+active+optimized final ext_rmse (1 thread): ", round(tail(ext_rmse_optimize_single, 1), 4),"\n")
 ```
 
 ## Validation
 ```{r metrics}
-y_true      <- rain$y[masked_idx]
-glmnet_y    <- imp_glmnet$y[masked_idx]
-ence_c_y    <- imp_c$y[masked_idx]
-ence_c1_y   <- imp_c_single$y[masked_idx]
-ence_warm_y <- imp_warmstart$y[masked_idx]
-ence_warm1_y <- imp_warmstart_single$y[masked_idx]
+y_true           <- rain$y[masked_idx]
+glmnet_y         <- imp_glmnet$y[masked_idx]
+ence_c1_y        <- imp_c_single$y[masked_idx]
+ence_warm1_y     <- imp_warmstart_single$y[masked_idx]
+ence_active1_y   <- imp_active_single$y[masked_idx]
+ence_optimize1_y <- imp_optimize_single$y[masked_idx]
 
 cat("glmnet\n")
 cat("RMSE:",   sqrt(mean((glmnet_y - y_true)^2)), "\n")
@@ -164,22 +170,32 @@ cat("Bias %:", sum(glmnet_y - y_true) / sum(y_true) * 100, "\n")
 cat("R2:",     1 - sum((glmnet_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
 cat("SRMSE:",  sqrt(mean((glmnet_y - y_true)^2)) / mean(y_true), "\n\n")
 
-cat("C (cold start)\n")
-cat("RMSE:",   sqrt(mean((ence_c_y - y_true)^2)), "\n")
-cat("Bias %:", sum(ence_c_y - y_true) / sum(y_true) * 100, "\n")
-cat("R2:",     1 - sum((ence_c_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
-cat("SRMSE:",  sqrt(mean((ence_c_y - y_true)^2)) / mean(y_true), "\n\n")
+cat("Naive C implementation\n")
+cat("RMSE:",   sqrt(mean((ence_c1_y - y_true)^2)), "\n")
+cat("Bias %:", sum(ence_c1_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((ence_c1_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((ence_c1_y - y_true)^2)) / mean(y_true), "\n\n")
 
 cat("C (warm start)\n")
-cat("RMSE:",   sqrt(mean((ence_warm_y - y_true)^2)), "\n")
-cat("Bias %:", sum(ence_warm_y - y_true) / sum(y_true) * 100, "\n")
-cat("R2:",     1 - sum((ence_warm_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
-cat("SRMSE:",  sqrt(mean((ence_warm_y - y_true)^2)) / mean(y_true), "\n\n")
+cat("RMSE:",   sqrt(mean((ence_warm1_y - y_true)^2)), "\n")
+cat("Bias %:", sum(ence_warm1_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((ence_warm1_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((ence_warm1_y - y_true)^2)) / mean(y_true), "\n\n")
 
-# 6-thread and 1-thread C should be identical
-cat("C 6-thread vs 1-thread max abs diff:", max(abs(ence_c_y - ence_c1_y)), "\n")
+cat("C (active set)\n")
+cat("RMSE:",   sqrt(mean((ence_active1_y - y_true)^2)), "\n")
+cat("Bias %:", sum(ence_active1_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((ence_active1_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((ence_active1_y - y_true)^2)) / mean(y_true), "\n\n")
 
-cat("Warm vs cold C max abs diff:", max(abs(ence_warm_y - ence_c_y)), "\n")
+cat("C (optimized)\n")
+cat("RMSE:",   sqrt(mean((ence_optimize1_y - y_true)^2)), "\n")
+cat("Bias %:", sum(ence_optimize1_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((ence_optimize1_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((ence_optimize1_y - y_true)^2)) / mean(y_true), "\n\n")
 
-cat("glmnet vs C max abs diff:", max(abs(glmnet_y - ence_c_y)), "\n")
+cat("Warm vs cold C max abs diff:", max(abs(ence_warm1_y - ence_c1_y)), "\n")
+cat("Active vs cold C max abs diff:", max(abs(ence_active1_y - ence_c1_y)), "\n")
+cat("Optimized vs cold C max abs diff:", max(abs(ence_optimize1_y - ence_c1_y)), "\n")
+cat("glmnet vs C max abs diff:", max(abs(glmnet_y - ence_c1_y)), "\n")
 ```
