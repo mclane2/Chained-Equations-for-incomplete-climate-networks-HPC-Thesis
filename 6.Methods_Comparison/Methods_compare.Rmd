@@ -48,6 +48,8 @@ df_miss$y[masked_idx] <- NA           # hide masked
 
 
 ## Imputation
+
+
 ```{r run-ENCE, message=FALSE, results='hide'}
 source("ENCE.R")
 time_ENCE <- system.time({
@@ -82,12 +84,22 @@ time_mf <- system.time({
 })
 ```
 
+```{r run-PPCA, message=FALSE}
+source("PPCA.R")
+time_ppca <- system.time({
+  imp_ppca <- PPCA(df_miss, nPcs = 20, transformation = sqrt,
+                   reverse_transformation = function(x) x^2)
+})
+```
+
+
 ## Results
 ```{r metrics}
 y_true     <- rain$y[masked_idx]
 ENCE_y <- imp_ENCE$y[masked_idx]
 idw_y  <- imp_idw$y
 mf_y <- imp_mf$y[masked_idx]
+ppca_y <- imp_ppca$y[masked_idx]
 ```
 
 
@@ -118,4 +130,13 @@ cat("RMSE:",   sqrt(mean((mf_y - y_true)^2)), "\n")
 cat("Bias %:", sum(mf_y - y_true) / sum(y_true) * 100, "\n")
 cat("R2:",     1 - sum((mf_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
 cat("SRMSE:",  sqrt(mean((mf_y - y_true)^2)) / mean(y_true), "\n\n")
+```
+
+```{r PPCA-results, results='hold'}
+cat("PPCA:\n")
+cat("Time", round(time_ppca["elapsed"], 2), "seconds\n")
+cat("RMSE:",   sqrt(mean((ppca_y - y_true)^2)), "\n")
+cat("Bias %:", sum(ppca_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((ppca_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((ppca_y - y_true)^2)) / mean(y_true), "\n\n")
 ```
