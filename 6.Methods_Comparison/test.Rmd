@@ -1,0 +1,75 @@
+
+# ENCE - Method Comparisonls
+
+This .Rmd does a comparison between different imputation methods
+
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo)
+
+```{r setup, message=FALSE}
+source("idw.R")
+source("elastic_net_C_implementation/elastic_net_R_glue.R")
+
+# Load Met Eireann daily data and station geodata file
+rain     <- read.csv("../met_eireann_daily_data/daily_rainfall_2016.csv")
+stations <- read.csv("../met_eireann_daily_data/station_geodata.csv")
+
+# Attach coordinates to each daily observation
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)#
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Adds a completeness column = observed days / 366.
+obs_per_station$completeness <- obs_per_station$n_obs / 366
+
+# Apply the % cutoff
+cutoff <- 0.50
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Then mask a fraction of the currently-observed cells
+set.seed(541)
+observed_idx <- which(!is.na(rain$y))
+masked_idx   <- sort(sample(observed_idx, length(observed_idx) * 0.25))
+
+df_miss <- rain
+df_miss$y[masked_idx] <- NA           # hide masked
+```
+
+
+## Imputation
+
+```{r run-MLR, message=FALSE}
+source("MLR.R")
+obs    <- df_miss[!is.na(df_miss$y), ]
+target <- df_miss[is.na(df_miss$y), ]
+time_mlr <- system.time({
+  imp_mlr <- impute_MLR(obs, target, nn = 5, response = "y")
+})
+```
+
+## Results
+```{r metrics}
+y_true     <- rain$y[masked_idx]
+mlr_y <- imp_mlr$y[masked_idx]
+```
+
+```{r MLR-results, results='hold'}
+cat("MLR:\n")
+cat("Time", round(time_mlr["elapsed"], 2), "seconds\n")
+cat("RMSE:",   sqrt(mean((mlr_y - y_true)^2)), "\n")
+cat("Bias %:", sum(mlr_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((mlr_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((mlr_y - y_true)^2)) / mean(y_true), "\n\n")
+```

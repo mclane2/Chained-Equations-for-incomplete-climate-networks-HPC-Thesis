@@ -47,7 +47,7 @@ df_miss$y[masked_idx] <- NA           # hide masked
 ```
 
 
-## Imputation
+## Run all Imputation Methods
 
 
 ```{r run-ENCE, message=FALSE, results='hide'}
@@ -92,6 +92,15 @@ time_ppca <- system.time({
 })
 ```
 
+```{r run-MLR, message=FALSE}
+source("MLR.R")
+obs    <- df_miss[!is.na(df_miss$y), ]
+target <- df_miss[is.na(df_miss$y), ]
+time_mlr <- system.time({
+  imp_mlr <- impute_MLR(obs, target, nn = 5, response = "y")
+})
+```
+
 
 ## Results
 ```{r metrics}
@@ -100,6 +109,7 @@ ENCE_y <- imp_ENCE$y[masked_idx]
 idw_y  <- imp_idw$y
 mf_y <- imp_mf$y[masked_idx]
 ppca_y <- imp_ppca$y[masked_idx]
+mlr_y <- imp_mlr$y[masked_idx]
 ```
 
 
@@ -111,7 +121,6 @@ cat("RMSE:",   sqrt(mean((ENCE_y - y_true)^2)), "\n")
 cat("Bias %:", sum(ENCE_y - y_true) / sum(y_true) * 100, "\n")
 cat("R2:",     1 - sum((ENCE_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
 cat("SRMSE:",  sqrt(mean((ENCE_y - y_true)^2)) / mean(y_true), "\n\n")
-
 ```
 
 ```{r idw-results, results='hold'}
@@ -139,4 +148,13 @@ cat("RMSE:",   sqrt(mean((ppca_y - y_true)^2)), "\n")
 cat("Bias %:", sum(ppca_y - y_true) / sum(y_true) * 100, "\n")
 cat("R2:",     1 - sum((ppca_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
 cat("SRMSE:",  sqrt(mean((ppca_y - y_true)^2)) / mean(y_true), "\n\n")
+```
+
+```{r MLR-results, results='hold'}
+cat("MLR:\n")
+cat("Time", round(time_mlr["elapsed"], 2), "seconds\n")
+cat("RMSE:",   sqrt(mean((mlr_y - y_true)^2)), "\n")
+cat("Bias %:", sum(mlr_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((mlr_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((mlr_y - y_true)^2)) / mean(y_true), "\n\n")
 ```
