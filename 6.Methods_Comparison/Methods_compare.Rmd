@@ -1,0 +1,121 @@
+# ENCE - Method Comparisonls
+
+This .Rmd does a comparison between different imputation methods
+
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo)
+
+```{r setup, message=FALSE}
+source("idw.R")
+source("elastic_net_C_implementation/elastic_net_R_glue.R")
+
+# Load Met Eireann daily data and station geodata file
+rain     <- read.csv("../met_eireann_daily_data/daily_rainfall_2016.csv")
+stations <- read.csv("../met_eireann_daily_data/station_geodata.csv")
+
+# Attach coordinates to each daily observation
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)#
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Adds a completeness column = observed days / 366.
+obs_per_station$completeness <- obs_per_station$n_obs / 366
+
+# Apply the % cutoff
+cutoff <- 0.50
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Then mask a fraction of the currently-observed cells
+set.seed(541)
+observed_idx <- which(!is.na(rain$y))
+masked_idx   <- sort(sample(observed_idx, length(observed_idx) * 0.25))
+
+df_miss <- rain
+df_miss$y[masked_idx] <- NA           # hide masked
+```
+
+
+## Imputation
+```{r run-ENCE, message=FALSE, results='hide'}
+source("ENCE.R")
+time_ENCE <- system.time({
+  imp_ENCE <- ENCE(df_miss, response = "y", max_cycles = 30,
+                     init_method = "idw",
+                     x_name = "east", y_name = "north", t_name = "t",
+                     C = 15000,
+                     transformation = sqrt,
+                     reverse_transformation = function(x) x^2,
+                     truth = rain$y, masked_idx = masked_idx,
+                     nthreads = 6)
+})
+ext_rmse_ENCE <- attr(imp_ENCE, "ext_rmse_history")
+```
+```{r run-idw, message=FALSE}
+source("idw.R")
+obs    <- df_miss[!is.na(df_miss$y), ]
+target <- rain[masked_idx, ]
+time_idw <- system.time({
+  imp_idw <- IDW_ST(obs, target, response = "y",
+                  x_name = "east", y_name = "north", t_name = "t",
+                  C = 15000,
+                  transformation = sqrt,
+                  reverse_transformation = function(x) x^2)
+})
+```
+```{r run-MissForest, message=FALSE}
+source("MissForest.R")
+time_mf <- system.time({
+  imp_mf <- MissForest(df_miss, ntree = 100, mtry = 100,
+                     transformation = sqrt, reverse_transformation = function(x) x^2)
+})
+```
+
+## Results
+```{r metrics}
+y_true     <- rain$y[masked_idx]
+ENCE_y <- imp_ENCE$y[masked_idx]
+idw_y  <- imp_idw$y
+mf_y <- imp_mf$y[masked_idx]
+```
+
+
+```{r ENCE-results, results='hold'}
+cat("ENCE:\n")
+cat("Time: ", round(time_ENCE["elapsed"], 2), "seconds\n")
+#cat("C implementation final ext_rmse: ", round(tail(ext_rmse_ENCE, 1), 4), "\n")
+cat("RMSE:",   sqrt(mean((ENCE_y - y_true)^2)), "\n")
+cat("Bias %:", sum(ENCE_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((ENCE_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((ENCE_y - y_true)^2)) / mean(y_true), "\n\n")
+
+```
+
+```{r idw-results, results='hold'}
+cat("IDW:\n")
+cat("Time", round(time_idw["elapsed"], 2), "seconds\n")
+cat("RMSE:",   sqrt(mean((idw_y - y_true)^2)), "\n")
+cat("Bias %:", sum(idw_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((idw_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((idw_y - y_true)^2)) / mean(y_true), "\n\n")
+```
+
+```{r MissForest-results, results='hold'}
+cat("MissForest:\n")
+cat("Time", round(time_mf["elapsed"], 2), "seconds\n")
+cat("RMSE:",   sqrt(mean((mf_y - y_true)^2)), "\n")
+cat("Bias %:", sum(mf_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((mf_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((mf_y - y_true)^2)) / mean(y_true), "\n\n")
+```
