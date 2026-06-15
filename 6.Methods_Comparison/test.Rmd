@@ -50,26 +50,31 @@ df_miss$y[masked_idx] <- NA           # hide masked
 
 ## Imputation
 
-```{r run-MLR, message=FALSE}
-source("MLR.R")
-obs    <- df_miss[!is.na(df_miss$y), ]
-target <- df_miss[is.na(df_miss$y), ]
-time_mlr <- system.time({
-  imp_mlr <- impute_MLR(obs, target, nn = 5, response = "y")
+```{r run-GAM, message=FALSE, results='hide'}
+source("GAM.R")
+time_gam <- system.time({
+  imp_gam <- ENCE(df_miss, response = "y", max_cycles = 30,
+                     init_method = "idw",
+                     x_name = "east", y_name = "north", t_name = "t",
+                     C = 15000,
+                     transformation = sqrt,
+                     reverse_transformation = function(x) x^2,
+                     truth = rain$y, masked_idx = masked_idx,
+                     nthreads = 6)
 })
 ```
 
 ## Results
 ```{r metrics}
 y_true     <- rain$y[masked_idx]
-mlr_y <- imp_mlr$y[masked_idx]
+gam_y <- imp_gam$y[masked_idx]
 ```
 
-```{r MLR-results, results='hold'}
-cat("MLR:\n")
-cat("Time", round(time_mlr["elapsed"], 2), "seconds\n")
-cat("RMSE:",   sqrt(mean((mlr_y - y_true)^2)), "\n")
-cat("Bias %:", sum(mlr_y - y_true) / sum(y_true) * 100, "\n")
-cat("R2:",     1 - sum((mlr_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
-cat("SRMSE:",  sqrt(mean((mlr_y - y_true)^2)) / mean(y_true), "\n\n")
+```{r GAM-results, results='hold'}
+cat("GAM:\n")
+cat("Time", round(time_gam["elapsed"], 2), "seconds\n")
+cat("RMSE:",   sqrt(mean((gam_y - y_true)^2)), "\n")
+cat("Bias %:", sum(gam_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((gam_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((gam_y - y_true)^2)) / mean(y_true), "\n\n")
 ```

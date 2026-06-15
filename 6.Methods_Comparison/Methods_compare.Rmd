@@ -77,11 +77,11 @@ time_idw <- system.time({
 })
 ```
 ```{r run-MissForest, message=FALSE}
-source("MissForest.R")
-time_mf <- system.time({
-  imp_mf <- MissForest(df_miss, ntree = 100, mtry = 100,
-                     transformation = sqrt, reverse_transformation = function(x) x^2)
-})
+#source("MissForest.R")
+#time_mf <- system.time({
+#  imp_mf <- MissForest(df_miss, ntree = 100, mtry = 100,
+#                     transformation = sqrt, reverse_transformation = function(x) x^2)
+#})
 ```
 
 ```{r run-PPCA, message=FALSE}
@@ -101,15 +101,28 @@ time_mlr <- system.time({
 })
 ```
 
+```{r run-GAM, message=FALSE, results='hide'}
+#source("GAM.R")
+#time_gam <- system.time({
+#  imp_gam <- ENCE(df_miss, response = "y", max_cycles = 30,
+#                     init_method = "idw",
+#                     x_name = "east", y_name = "north", t_name = "t",
+#                     C = 15000,
+#                     transformation = sqrt,
+#                     reverse_transformation = function(x) x^2,
+#                     truth = rain$y, masked_idx = masked_idx,
+#                     nthreads = 6)
+#})
 
 ## Results
 ```{r metrics}
 y_true     <- rain$y[masked_idx]
 ENCE_y <- imp_ENCE$y[masked_idx]
 idw_y  <- imp_idw$y
-mf_y <- imp_mf$y[masked_idx]
+#mf_y <- imp_mf$y[masked_idx]
 ppca_y <- imp_ppca$y[masked_idx]
 mlr_y <- imp_mlr$y[masked_idx]
+#gam_y <- imp_gam$y[masked_idx]
 ```
 
 
@@ -133,12 +146,12 @@ cat("SRMSE:",  sqrt(mean((idw_y - y_true)^2)) / mean(y_true), "\n\n")
 ```
 
 ```{r MissForest-results, results='hold'}
-cat("MissForest:\n")
-cat("Time", round(time_mf["elapsed"], 2), "seconds\n")
-cat("RMSE:",   sqrt(mean((mf_y - y_true)^2)), "\n")
-cat("Bias %:", sum(mf_y - y_true) / sum(y_true) * 100, "\n")
-cat("R2:",     1 - sum((mf_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
-cat("SRMSE:",  sqrt(mean((mf_y - y_true)^2)) / mean(y_true), "\n\n")
+#cat("MissForest:\n")
+#cat("Time", round(time_mf["elapsed"], 2), "seconds\n")
+#cat("RMSE:",   sqrt(mean((mf_y - y_true)^2)), "\n")
+#cat("Bias %:", sum(mf_y - y_true) / sum(y_true) * 100, "\n")
+#cat("R2:",     1 - sum((mf_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+#cat("SRMSE:",  sqrt(mean((mf_y - y_true)^2)) / mean(y_true), "\n\n")
 ```
 
 ```{r PPCA-results, results='hold'}
@@ -157,4 +170,13 @@ cat("RMSE:",   sqrt(mean((mlr_y - y_true)^2)), "\n")
 cat("Bias %:", sum(mlr_y - y_true) / sum(y_true) * 100, "\n")
 cat("R2:",     1 - sum((mlr_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
 cat("SRMSE:",  sqrt(mean((mlr_y - y_true)^2)) / mean(y_true), "\n\n")
+```
+
+```{r GAM-results, results='hold'}
+#cat("GAM:\n")
+#cat("Time", round(time_gam["elapsed"], 2), "seconds\n")
+#cat("RMSE:",   sqrt(mean((gam_y - y_true)^2)), "\n")
+#cat("Bias %:", sum(gam_y - y_true) / sum(y_true) * 100, "\n")
+#cat("R2:",     1 - sum((gam_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+#cat("SRMSE:",  sqrt(mean((gam_y - y_true)^2)) / mean(y_true), "\n\n")
 ```
