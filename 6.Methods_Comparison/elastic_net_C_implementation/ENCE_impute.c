@@ -14,6 +14,10 @@
 #include <string.h>
 #include <omp.h>
 
+#ifdef WRITE_BETAS
+#include <stdio.h>
+#endif
+
 #include "elastic_net.h"
 #include "ENCE_impute.h"
 
@@ -210,6 +214,21 @@ static void column_impute(const double *df_old, double *target_out, int n, int p
     *lambda_io = lambda;
     *alpha_io  = alpha;
 
+    #ifdef WRITE_BETAS
+    /* Print Betas to file for analysis later */
+    #pragma omp critical
+    {
+        FILE *fp = fopen("betas.csv", "a");
+        if (fp) {
+            for (int jc = 0; jc < p_cov; ++jc) {
+                int src = (jc < col) ? jc : jc + 1; // remap past the diagonal
+                fprintf(fp, "%d,%d,%.10g\n", col, src, beta[jc]);
+                }
+            }
+        fclose(fp);
+    }
+    #endif
+
     free(obs_rows); free(miss_rows); free(x_obs); free(x_miss); free(y_obs); free(beta);
 }
 
@@ -223,6 +242,15 @@ void ence_impute_cycle(const double *df_old, double *df_new, const int *missing_
 {
 
     if (nthreads <= 0) nthreads = omp_get_max_threads();   /* Use all cores if ntheads is not passed */
+
+    #ifdef WRITE_BETAS
+    /* Create a new beta file each cycle*/
+    FILE *fp = fopen("betas.csv", "w");
+    if (fp) {
+        fprintf(fp, "target,predictor,beta\n");
+        fclose(fp);
+    }
+    #endif
 
     #pragma omp parallel for schedule(dynamic) num_threads(nthreads)
     for (int col = 0; col < p; ++col) {

@@ -12,8 +12,8 @@
 # ./build.sh
 #
 # Author: M. Lane
-# Version: 4.0 (Added -03 and compiler flags)
-# Date: 2026-06-12
+# Version: 5.0 (Added write betas to file flag)
+# Date: 2026-06-16
 
 set -euo pipefail
 
@@ -21,7 +21,8 @@ set -euo pipefail
 rm -f *.o *.so
 
 # Compile + link with OpenMP.
-PKG_CFLAGS="-fopenmp -O3 -march=native -funroll-loops -flto" PKG_LIBS="-fopenmp -flto" \
+PKG_CFLAGS="-fopenmp -O3 -march=native -funroll-loops -flto -DWRITE_BETAS" \
+PKG_LIBS="-fopenmp -flto" \
 R CMD SHLIB elastic_net_functions.c elastic_net.c ENCE_impute.c elastic_net_R_wrapper.c \
   -o ENCE_impute.so
 
