@@ -60,7 +60,7 @@ time_gam <- system.time({
                      transformation = sqrt,
                      reverse_transformation = function(x) x^2,
                      truth = rain$y, masked_idx = masked_idx,
-                     nthreads = 6)
+                     nthreads = 1)
 })
 ```
 

@@ -1,6 +1,6 @@
 
 
-## GAM - R-parallel Elastic-net Chained Equation with GAM instead of glmnet ##
+## GAM (Gamsel package) - R-parallel Elastic-net Chained Equation with GAM ##
 
 # Author: Brian O'Sullivan (modified by Marc Lane)
 # Please refer to https://doi.org/10.1002/joc.8513 for further details 
@@ -174,7 +174,6 @@ ENCE <- function(df, response = "y",
 
 # One single imputation cycle for all spatial locations
 # Updated ENCE_impute for allowing parallel iterations
-# Matrix df is only updated after all the columns are updated (loop iterations are now independant)
 ENCE_impute_parallel <- function(df, missing_idx, ls = NA, as = NA,
                                  n_cores = 6, ...){
   # df              -Input data
@@ -186,7 +185,7 @@ ENCE_impute_parallel <- function(df, missing_idx, ls = NA, as = NA,
   # Snapshot of df at the start of the cycle that covariates will read from
   df_old <- df
 
-  # Loop through and update each column in parallel
+    # Loop through and update each column in parallel
   results <- parallel::mclapply(1:ncol(df_old), function(column) {
 
     # Get the target column, other column and missing index
@@ -197,7 +196,7 @@ ENCE_impute_parallel <- function(df, missing_idx, ls = NA, as = NA,
     # Impute the target station
     column_impute(covariates, target, missing_values, ls[column], as[column])
   }, mc.cores = n_cores)
-
+  
   # Reassembling the solution after update
   for (column in seq_along(results)) {
     # Update covariates and hyper  parameters with imputation model output
@@ -209,54 +208,70 @@ ENCE_impute_parallel <- function(df, missing_idx, ls = NA, as = NA,
   return(list("df" = df, "ls" = ls, "as" = as))
 }
 
-
-
-
+# Impute all missing values for a column using a sparse GAM (gamsel)
 column_impute <- function(covariates, target, missing_values,
                           lambda = NA, alpha = NA,
-                          k = 20, use_temporal = TRUE, ...){
+                          gamma = 0.4, max_degree = 10, max_df = 5){
 
-  require(mgcv)
+  # covariates          -Covariate columns (X)
+  # target              -Target column (Y)
+  # missing_values      -Positions of missing values to be imputed
+  # lambda              -Index into the gamsel lambda path
+  # alpha               -Reused as gamsel's gamma
+  # gamma               -Default gamsel penalty mix if alpha not supplied
+  # max_degree/max_df   -Caps on the spline basis per predictor
 
-  # Some stations might have no missing covariates
-  if (any(missing_values)){
+  require(gamsel)
 
-    # Input matrices for GAM
-    ymiss <- unlist(missing_values)
+  g <- if (is.na(alpha)) gamma else alpha
+
+  # Some stations might have no missing values
+  if(any(missing_values)){
+
+    # Predictor matrix, with a time index added as an extra covariate
+    x     <- as.matrix(covariates)
+    x     <- cbind(x, t = seq_len(nrow(x)))
     y     <- unlist(target)
-    X     <- as.matrix(covariates)   # N x p block of station covariates
-    t     <- seq_len(nrow(X))        # list of integers 1 to the number of rows
-
-    # paraPen argument setup
-    pen  <- list(X = list(diag(ncol(X))))
-    # form argument setup, 
-    form <- if (use_temporal) {y ~ X + s(t, k = k)} else {y ~ X}
-    
+    ymiss <- unlist(missing_values)
     obs   <- !ymiss
-    model <- gam(form, data = list(y = y[obs], X = X[obs, , drop = FALSE], t = t[obs]),
-                 paraPen = pen, method = "REML")
 
-    # Calculate predicted values for missing covariates
-    target[missing_values, ] <-
-      predict(model, newdata = list(X = X[ymiss, , drop = FALSE], t = t[ymiss]))
+    # Drop predictors that are non-finite or constant on the observed rows
+    keep <- apply(x[obs, , drop = FALSE], 2,
+                  function(z) all(is.finite(z)) && length(unique(z)) > 1L)
+    x    <- x[, keep, drop = FALSE]
+    Xobs <- x[obs, , drop = FALSE]
+
+    # Build a spline basis per predictor (degree capped by its unique count)
+    bases <- lapply(seq_len(ncol(Xobs)), function(j){
+      z  <- Xobs[, j]
+      z  <- z[is.finite(z)]
+      nu <- length(unique(z))
+      d  <- max(1L, min(max_degree, nu - 1L))
+      basis.gen(z, degree = d, df = min(max_df, d))
+    })
+
+    # Lambda/gamma need to be fit if not provided
+    if(is.na(lambda)){
+      # Fit gamsel with CV; use the 1se index (stronger regularisation than min)
+      cvfit  <- cv.gamsel(x = Xobs, y = y[obs], gamma = g, bases = bases)
+      lambda <- cvfit$index.1se
+      model  <- cvfit$gamsel.fit
+    }
+    # If lambda does not need to be fitted
+    else{
+      model <- gamsel(x = Xobs, y = y[obs], gamma = g, bases = bases)
+    }
+
+    # Predicted values for the missing rows, clamped to a sane range
+    pred <- predict(model, x[ymiss, , drop = FALSE],
+                    index = lambda, type = "response")
+    hi   <- max(y[obs]) * 1.5
+    pred <- pmin(pmax(pred, 0), hi)
+    target[missing_values, ] <- pred
   }
 
-  return(list("target" = target, "lambda" = NA, "alpha" = NA))
+  return(list("target" = target, "lambda" = lambda, "alpha" = g))
 }
-
-
-
-
-# Get lowest cvm and corresponding lambda from a `cvfit` object
-
-extract_best_cvm <- function(cvfit){
-  lambda <- cvfit$lambda.min
-  cvm <- cvfit$cvm[which(cvfit$lambda == lambda)]
-  return(c(lambda, cvm))
-}
-
-
-
 
 # Quick rmse function
 
