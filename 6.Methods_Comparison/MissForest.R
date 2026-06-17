@@ -3,6 +3,8 @@
 # Author: Marc Lane
 # MissForest: Stekhoven & Buhlmann (2012), https://doi.org/10.1093/bioinformatics/btr597
 
+# This function is mostly just a wrapper for the MissForest function
+
 ## NOTE: The dataframe must follow a "long-table" format. i.e. each row is a 
 ## measurement with a spatial ID and time ID. All possible ID combinations
 ## must be included, missing or non-missing, and duplicate 

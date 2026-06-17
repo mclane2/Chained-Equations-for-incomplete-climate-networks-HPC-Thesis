@@ -1,7 +1,7 @@
 ## Multiple Linear Regression (MLR) imputation
 
 # Author: Brian O'Sullivan, adapted by Marc Lane
-# Imputes each station from its nearest neighbours via OLS. 
+# Imputes each station from its nearest neighbours via OLS
 # Stations are pre-filled using IDW first.
 
 impute_MLR <- function(data, newdata, nn = 5, response = "y",
@@ -25,7 +25,7 @@ impute_MLR <- function(data, newdata, nn = 5, response = "y",
   df_filled <- df
   df_filled[[response]][missing] <- idw_out[[response]]
 
-  # Wide [times x stations] table of filled values, used as regression predictors
+  # Wide table of filled values, used as regression predictors
   Wfill <- df_filled %>% dplyr::select(all_of(c(t_name, "stno", response))) %>%
     pivot_wider(names_from = "stno", values_from = all_of(response)) %>%
     dplyr::select(-all_of(t_name)) %>% as.matrix()

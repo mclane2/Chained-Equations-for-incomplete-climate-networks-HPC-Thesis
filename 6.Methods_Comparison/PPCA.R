@@ -3,6 +3,8 @@
 # Author: Marc Lane
 # Implemented with the pcaMethods package (Stacklies et al, 2007)
 
+# This function is mostly just a wrapper for the pca() function
+
 ## NOTE: The dataframe must follow a "long-table" format. i.e. each row is a 
 ## measurement with a spatial ID and time ID. All possible ID combinations
 ## must be included, missing or non-missing, and duplicate 

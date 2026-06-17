@@ -14,7 +14,8 @@
 
 ## Removed parallelism for cross validation
 ## ENCE_impute is replaced with ENCE_impute_parallel, so that matrix is only 
-## updated after all the columns are updated (loop iterations are now independent)
+## updated after all the columns are updated
+## (loop iterations are now independent)
 
 ## Calls my C implementation instead of glmnet
 
