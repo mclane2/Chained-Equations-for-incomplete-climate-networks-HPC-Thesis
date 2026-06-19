@@ -199,6 +199,19 @@ ENCE <- function(df, response = "y",
   return(df)
 }
 
+make_folds <- function(missing_idx, nfolds = 10L, seed = 323) {
+  folds <- matrix(0L, nrow(missing_idx), ncol(missing_idx))
+  for (col in 1:ncol(missing_idx)) {
+    obs   <- !missing_idx[, col]
+    n_obs <- sum(obs)
+    if (n_obs > 0) {
+      set.seed(seed)
+      folds[obs, col] <- sample(rep(1:nfolds, length.out = n_obs))
+    }
+  }
+  folds
+}
+
 
 # Quick rmse function
 

@@ -1,4 +1,4 @@
-# ENCE - Method Comparisonls
+# ENCE - Method Comparison
 
 This .Rmd does a comparison between different imputation methods
 
@@ -115,6 +115,20 @@ time_mlr <- system.time({
 #})
 ```
 
+```{r run-MICE_DURR, message=FALSE, results='hide'}
+source("MICE_DURR.R")
+time_mice_durr <- system.time({
+  imp_mice_durr <- MICE_DURR(df_miss, response = "y", m = 4,
+                                 max_impute_cycles = 8, hyp_cycles = 2, 
+                                 init_method = "mean",
+                                 max_EM_cycles = 8, 
+                                 nclusters = 6,
+                                 outfile = NULL,
+                                 transformation = sqrt,
+                                 reverse_transformation = {function(x) x^2})
+})
+```
+
 ## Results
 ```{r metrics}
 y_true     <- rain$y[masked_idx]
@@ -124,6 +138,7 @@ idw_y  <- imp_idw$y
 ppca_y <- imp_ppca$y[masked_idx]
 mlr_y <- imp_mlr$y[masked_idx]
 #gam_y <- imp_gam$y[masked_idx]
+mice_durr_y <- imp_mice_durr$y[masked_idx]
 
 
 plot_obs_pred <- function(observed, predicted, method_name = "Method") {
@@ -202,6 +217,15 @@ plot_obs_pred(y_true, mlr_y, "MLR")
 #cat("R2:",     1 - sum((gam_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
 #cat("SRMSE:",  sqrt(mean((gam_y - y_true)^2)) / mean(y_true), "\n\n")
 #plot_obs_pred(y_true, gam_y, "GAM")
+```
+
+```{r MICE_DURR-results, results='hold'}
+cat("MICE-DURR:\n")
+cat("Time: ", round(time_mice_durr["elapsed"], 2), "seconds\n")
+cat("RMSE:",   sqrt(mean((mice_durr_y - y_true)^2)), "\n")
+cat("Bias %:", sum(mice_durr_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((mice_durr_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((mice_durr_y - y_true)^2)) / mean(y_true), "\n\n")
 ```
 
 

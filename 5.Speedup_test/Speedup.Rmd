@@ -47,6 +47,21 @@ df_miss$y[masked_idx] <- NA           # hide masked
 ```
 
 ## Imputation
+```{r run-C, message=FALSE, results='hide'}
+source("ENCE_C_parallel.R")
+time_C <- system.time({
+  imp_C <- ENCE(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = masked_idx,
+                nthreads = 6)
+})
+ext_rmse_C <- attr(imp_C, "ext_rmse_history")
+```
+
 ```{r run-original, message=FALSE, results='hide'}
 source("ENCE_original.R")
 time_original <- system.time({
@@ -74,21 +89,6 @@ time_R <- system.time({
                 n_cores = 6)
 })
 ext_rmse_R<- attr(imp_R, "ext_rmse_history")
-```
-
-```{r run-C, message=FALSE, results='hide'}
-source("ENCE_C_parallel.R")
-time_C <- system.time({
-  imp_C <- ENCE(df_miss, response = "y", max_cycles = 30,
-                init_method = "idw",
-                x_name = "east", y_name = "north", t_name = "t",
-                C = 15000,
-                transformation = sqrt,
-                reverse_transformation = function(x) x^2,
-                truth = rain$y, masked_idx = masked_idx,
-                nthreads = 6)
-})
-ext_rmse_C <- attr(imp_C, "ext_rmse_history")
 ```
 
 ## Results

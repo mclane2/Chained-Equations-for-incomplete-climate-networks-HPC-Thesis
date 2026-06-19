@@ -4,27 +4,10 @@
 # and exposes R functions that wrap the underlying C implementation via .Call.
 #
 # Author: M. Lane
-# Version: 4.0
-# Date: 2026-06-07
+# Version: 5.0
+# Date: 2026-06-19
 
 dyn.load("elastic_net_C_implementation_optimize/ENCE_impute_optimize.so")
-
-# Build the n x p CV fold matrix, reproducing the per-column seed/sample logic.
-# Observed rows carry their fold id
-make_folds <- function(missing_idx, nfolds = 10L, seed = 323) {
-  folds <- matrix(0L, nrow(missing_idx), ncol(missing_idx))
-  for (col in 1:ncol(missing_idx)) {
-
-    obs   <- !missing_idx[, col]
-    n_obs <- sum(obs)
-
-    if (n_obs > 0) {
-      set.seed(seed)
-      folds[obs, col] <- sample(rep(1:nfolds, length.out = n_obs))
-    }
-  }
-  folds
-}
 
 # One synchronous imputation cycle, parallel across stations in C.
 # Returns list(df, lambda, alpha).
