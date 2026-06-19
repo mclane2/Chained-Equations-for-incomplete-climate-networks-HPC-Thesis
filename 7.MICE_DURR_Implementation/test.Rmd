@@ -1,0 +1,98 @@
+
+# ENCE - Method Comparisonls
+
+This .Rmd does a comparison between different imputation methods
+
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo)
+
+```{r setup, message=FALSE}
+source("idw.R")
+source("MICE_elastic_net_C_implementation/elastic_net_R_glue.R")
+
+# Load Met Eireann daily data and station geodata file
+rain     <- read.csv("../met_eireann_daily_data/daily_rainfall_2016.csv")
+stations <- read.csv("../met_eireann_daily_data/station_geodata.csv")
+
+# Attach coordinates to each daily observation
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)#
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Adds a completeness column = observed days / 366.
+obs_per_station$completeness <- obs_per_station$n_obs / 366
+
+# Apply the % cutoff
+cutoff <- 0.50
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Then mask a fraction of the currently-observed cells
+set.seed(541)
+observed_idx <- which(!is.na(rain$y))
+masked_idx   <- sort(sample(observed_idx, length(observed_idx) * 0.25))
+
+df_miss <- rain
+df_miss$y[masked_idx] <- NA           # hide masked
+```
+
+
+## Imputation
+
+```{r run-MICE_DURR, message=FALSE, results='hide'}
+source("MICE_DURR_C.R")
+time_mice_durr <- system.time({
+  imp_mice_durr <- MICE_DURR(df_miss, response = "y", m = 4,
+                                 max_impute_cycles = 8, hyp_cycles = 2, 
+                                 init_method = "mean",
+                                 max_EM_cycles = 8, 
+                                 nclusters = 1,
+                                 nthreads = 6L,
+                                 outfile = NULL,
+                                 transformation = sqrt,
+                                 reverse_transformation = {function(x) x^2})
+})
+```
+
+## Results
+```{r metrics}
+y_true     <- rain$y[masked_idx]
+mice_durr_y <- imp_mice_durr$y[masked_idx]
+
+plot_obs_pred <- function(observed, predicted, method_name = "Method") {
+
+  # Set equal axes so the 1:1 line is meaningful
+  lims <- range(c(observed, predicted), na.rm = TRUE)
+  
+  plot(observed, predicted,
+       xlim = lims, ylim = lims,
+       xlab = "Observed",
+       ylab = "Predicted",
+       main = paste(method_name, ": Observed vs Predicted"),
+       pch = 16, cex = 0.7)
+  
+  abline(0, 1, col = "red", lwd = 2)
+  grid()
+}
+```
+
+```{r MICE_DURR-results, results='hold'}
+cat("MICE-DURR:\n")
+cat("Time: ", round(time_mice_durr["elapsed"], 2), "seconds\n")
+cat("RMSE:",   sqrt(mean((mice_durr_y - y_true)^2)), "\n")
+cat("Bias %:", sum(mice_durr_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((mice_durr_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((mice_durr_y - y_true)^2)) / mean(y_true), "\n\n")
+plot_obs_pred(y_true, mice_durr_y, "MICE-DURR")
+```
