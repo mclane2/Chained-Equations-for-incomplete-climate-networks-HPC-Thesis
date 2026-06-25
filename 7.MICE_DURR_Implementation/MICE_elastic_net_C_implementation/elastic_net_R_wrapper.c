@@ -6,15 +6,15 @@
  * Unpacks R objects into plain C types, runs the fit, and packs results back into an R list.
  * 
  * Author: M. Lane
- * Version: 5.0
- * Date: 2026-06-19
+ * Version: 6.0
+ * Date: 2026-06-25
  */
 #include <R.h>
 #include <Rinternals.h>
 #include "ENCE_impute.h"
 
 
-SEXP ence_impute_cycle_R(SEXP df_old_sexp, SEXP missing_sexp, SEXP folds_sexp, SEXP lambdas_sexp, SEXP alphas_sexp,
+SEXP mice_impute_cycle_R(SEXP df_old_sexp, SEXP missing_sexp, SEXP folds_sexp, SEXP lambdas_sexp, SEXP alphas_sexp,
                          SEXP nfolds_sexp, SEXP thresh_sexp, SEXP maxit_sexp, SEXP nthreads_sexp, SEXP lambda_io_sexp, SEXP alpha_io_sexp,
                          SEXP noise_sexp, SEXP boot_sexp)
 {

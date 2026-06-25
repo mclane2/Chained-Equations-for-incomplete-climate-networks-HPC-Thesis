@@ -3,7 +3,7 @@
 # Filename: build.sh
 #
 # Description:
-# Compiles the C source files into MICE_impute.so (an R-loadable shared library)
+# Compiles the C source files into ENCE_impute.so (an R-loadable shared library)
 # via R CMD SHLIB, with OpenMP. Cleans build artefacts before compilation
 # and removes object files after a successful build.
 #
@@ -12,21 +12,21 @@
 # ./build.sh
 #
 # Author: M. Lane
-# Version: 6.0 (Removed write betas to file flag for MICE, removed diagnostics)
-# Date: 2026-06-25
+# Version: 5.0 (Added write betas to file flag)
+# Date: 2026-06-16
 
 set -euo pipefail
 
 # Clean directory before compiling
 rm -f *.o *.so
 
-# Compile + link with OpenMP (DUMP_CVM turned ON)
-PKG_CFLAGS="-fopenmp -O3 -march=native -funroll-loops -flto -Wall -Wextra" \
+# Compile + link with OpenMP.
+PKG_CFLAGS="-fopenmp -O3 -march=native -funroll-loops -flto -DWRITE_BETAS -Wall -Wextra" \
 PKG_LIBS="-fopenmp -flto" \
 R CMD SHLIB elastic_net_functions.c elastic_net.c ENCE_impute.c elastic_net_R_wrapper.c \
-  -o MICE_impute.so
+  -o ENCE_impute.so  
 
 # Clean up .o files
 rm -f *.o
 
-echo "Built MICE_impute.so"
+echo "Built ENCE_impute.so"

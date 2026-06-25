@@ -1,5 +1,5 @@
 
-# ENCE - Method Comparisonls
+# ENCE - Method Comparison
 
 This .Rmd does a comparison between different imputation methods
 
@@ -10,6 +10,7 @@ Load the Met Eireann daily data (not available in this Github repo)
 ```{r setup, message=FALSE}
 source("idw.R")
 source("MICE_elastic_net_C_implementation/elastic_net_R_glue.R")
+source("elastic_net_C_implementation/elastic_net_R_glue.R")
 
 # Load Met Eireann daily data and station geodata file
 rain     <- read.csv("../met_eireann_daily_data/daily_rainfall_2016.csv")
@@ -50,25 +51,59 @@ df_miss$y[masked_idx] <- NA           # hide masked
 
 ## Imputation
 
-```{r run-MICE_DURR, message=FALSE, results='hide'}
-source("MICE_DURR_C.R")
-time_mice_durr <- system.time({
-  imp_mice_durr <- MICE_DURR(df_miss, response = "y", m = 4,
-                                 max_impute_cycles = 8, hyp_cycles = 2, 
+```{r run-MICE_DURR_R, message=FALSE, results='hide'}
+source("MICE_DURR_R.R")
+R_time_mice_durr <- system.time({
+  R_imp_mice_durr <- MICE_DURR(df_miss, response = "y", m = 1,
+                                 max_impute_cycles = 5, hyp_cycles = 2, 
                                  init_method = "mean",
                                  max_EM_cycles = 8, 
                                  nclusters = 1,
-                                 nthreads = 6L,
                                  outfile = NULL,
+                                 lambda_options = c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01),
+                                 alpha_options  = c(0.1, 0.35, 0.65, 0.9),
                                  transformation = sqrt,
                                  reverse_transformation = {function(x) x^2})
+})
+```
+
+```{r run-MICE_DURR_C, message=FALSE, results='hide'}
+source("MICE_DURR_C.R")
+C_time_mice_durr <- system.time({
+  C_imp_mice_durr <- MICE_DURR(df_miss, response = "y", m = 1,
+                                 max_impute_cycles = 5, hyp_cycles = 2, 
+                                 init_method = "mean",
+                                 max_EM_cycles = 8,
+                                 nclusters = 1,
+                                 nthreads = 6L,
+                                 outfile = NULL,
+                                 lambda_options = c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01),
+                                 alpha_options  = c(0.1, 0.35, 0.65, 0.9),
+                                 transformation = sqrt,
+                                 reverse_transformation = {function(x) x^2})
+})
+```
+
+```{r run-ENCE, message=FALSE, results='hide'}
+source("ENCE.R")
+time_ence <- system.time({
+  imp_ence <- ENCE(df_miss, response = "y", max_cycles = 30,
+                     init_method = "idw",
+                     x_name = "east", y_name = "north", t_name = "t",
+                     C = 15000,
+                     transformation = sqrt,
+                     reverse_transformation = function(x) x^2,
+                     truth = rain$y, masked_idx = masked_idx,
+                     nthreads = 6)
 })
 ```
 
 ## Results
 ```{r metrics}
 y_true     <- rain$y[masked_idx]
-mice_durr_y <- imp_mice_durr$y[masked_idx]
+C_mice_durr_y <- C_imp_mice_durr$y[masked_idx]
+R_mice_durr_y <- R_imp_mice_durr$y[masked_idx]
+ence_y <- imp_ence$y[masked_idx]
 
 plot_obs_pred <- function(observed, predicted, method_name = "Method") {
 
@@ -86,13 +121,31 @@ plot_obs_pred <- function(observed, predicted, method_name = "Method") {
   grid()
 }
 ```
+```{r ENCE_results, results='hold'}
+cat("ENCE:\n")
+cat("Time: ", round(time_ence["elapsed"], 2), "seconds\n")
+cat("RMSE:",   sqrt(mean((ence_y - y_true)^2)), "\n")
+cat("Bias %:", sum(ence_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((ence_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((ence_y - y_true)^2)) / mean(y_true), "\n\n")
+plot_obs_pred(y_true, ence_y, "ENCE")
+```
+```{r MICE_DURR_C_results, results='hold'}
+cat("MICE-DURR-C:\n")
+cat("Time: ", round(C_time_mice_durr["elapsed"], 2), "seconds\n")
+cat("RMSE:",   sqrt(mean((C_mice_durr_y - y_true)^2)), "\n")
+cat("Bias %:", sum(C_mice_durr_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((C_mice_durr_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((C_mice_durr_y - y_true)^2)) / mean(y_true), "\n\n")
+plot_obs_pred(y_true, C_mice_durr_y, "MICE-DURR-C")
+```
 
-```{r MICE_DURR-results, results='hold'}
-cat("MICE-DURR:\n")
-cat("Time: ", round(time_mice_durr["elapsed"], 2), "seconds\n")
-cat("RMSE:",   sqrt(mean((mice_durr_y - y_true)^2)), "\n")
-cat("Bias %:", sum(mice_durr_y - y_true) / sum(y_true) * 100, "\n")
-cat("R2:",     1 - sum((mice_durr_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
-cat("SRMSE:",  sqrt(mean((mice_durr_y - y_true)^2)) / mean(y_true), "\n\n")
-plot_obs_pred(y_true, mice_durr_y, "MICE-DURR")
+```{r MICE_DURR_R_results, results='hold'}
+cat("MICE-DURR-R:\n")
+cat("Time: ", round(R_time_mice_durr["elapsed"], 2), "seconds\n")
+cat("RMSE:",   sqrt(mean((R_mice_durr_y - y_true)^2)), "\n")
+cat("Bias %:", sum(R_mice_durr_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((R_mice_durr_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((R_mice_durr_y - y_true)^2)) / mean(y_true), "\n\n")
+plot_obs_pred(y_true, R_mice_durr_y, "MICE-DURR-R")
 ```
