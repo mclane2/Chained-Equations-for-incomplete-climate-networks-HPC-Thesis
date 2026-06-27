@@ -9,6 +9,7 @@ Load the Met Eireann daily data (not available in this Github repo)
 ```{r setup, message=FALSE}
 source("idw.R")
 source("elastic_net_C_implementation/elastic_net_R_glue.R")
+source("MICE_elastic_net_C_implementation/elastic_net_R_glue.R")
 
 # Load Met Eireann daily data and station geodata file
 rain     <- read.csv("../met_eireann_daily_data/daily_rainfall_2016.csv")
@@ -64,6 +65,22 @@ time_ence <- system.time({
 })
 ext_rmse_ence <- attr(imp_ence, "ext_rmse_history")
 ```
+
+```{r run-MICE_DURR_C, message=FALSE, results='hide'}
+source("MICE_DURR_C.R")
+time_mice_durr <- system.time({
+  imp_mice_durr <- MICE_DURR(df_miss, response = "y", m = 20,
+                                 max_impute_cycles = 8, hyp_cycles = 2, 
+                                 init_method = "mean",
+                                 max_EM_cycles = 8,
+                                 nclusters = 1,
+                                 nthreads = 6L,
+                                 outfile = NULL,
+                                 transformation = sqrt,
+                                 reverse_transformation = {function(x) x^2})
+})
+```
+
 ```{r run-idw, message=FALSE}
 source("idw.R")
 obs    <- df_miss[!is.na(df_miss$y), ]
@@ -77,11 +94,11 @@ time_idw <- system.time({
 })
 ```
 ```{r run-MissForest, message=FALSE}
-#source("MissForest.R")
-#time_mf <- system.time({
-#  imp_mf <- MissForest(df_miss, ntree = 100, mtry = 100,
-#                     transformation = sqrt, reverse_transformation = function(x) x^2)
-#})
+source("MissForest.R")
+time_mf <- system.time({
+  imp_mf <- MissForest(df_miss, ntree = 100, mtry = 100,
+                     transformation = sqrt, reverse_transformation = function(x) x^2)
+})
 ```
 
 ```{r run-PPCA, message=FALSE}
@@ -115,26 +132,14 @@ time_mlr <- system.time({
 #})
 ```
 
-```{r run-MICE_DURR, message=FALSE, results='hide'}
-source("MICE_DURR.R")
-time_mice_durr <- system.time({
-  imp_mice_durr <- MICE_DURR(df_miss, response = "y", m = 4,
-                                 max_impute_cycles = 8, hyp_cycles = 2, 
-                                 init_method = "mean",
-                                 max_EM_cycles = 8, 
-                                 nclusters = 6,
-                                 outfile = NULL,
-                                 transformation = sqrt,
-                                 reverse_transformation = {function(x) x^2})
-})
-```
+
 
 ## Results
 ```{r metrics}
 y_true     <- rain$y[masked_idx]
 ence_y <- imp_ence$y[masked_idx]
 idw_y  <- imp_idw$y
-#mf_y <- imp_mf$y[masked_idx]
+mf_y <- imp_mf$y[masked_idx]
 ppca_y <- imp_ppca$y[masked_idx]
 mlr_y <- imp_mlr$y[masked_idx]
 #gam_y <- imp_gam$y[masked_idx]
@@ -169,6 +174,16 @@ cat("SRMSE:",  sqrt(mean((ence_y - y_true)^2)) / mean(y_true), "\n\n")
 plot_obs_pred(y_true, ence_y, "ENCE")
 ```
 
+```{r MICE_DURR-results, results='hold'}
+cat("MICE-DURR:\n")
+cat("Time: ", round(time_mice_durr["elapsed"], 2), "seconds\n")
+cat("RMSE:",   sqrt(mean((mice_durr_y - y_true)^2)), "\n")
+cat("Bias %:", sum(mice_durr_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((mice_durr_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((mice_durr_y - y_true)^2)) / mean(y_true), "\n\n")
+plot_obs_pred(y_true, mice_durr_y, "MICE DURR")
+```
+
 ```{r idw-results, results='hold'}
 cat("IDW:\n")
 cat("Time", round(time_idw["elapsed"], 2), "seconds\n")
@@ -180,13 +195,13 @@ plot_obs_pred(y_true, idw_y, "IDW")
 ```
 
 ```{r MissForest-results, results='hold'}
-#cat("MissForest:\n")
-#cat("Time", round(time_mf["elapsed"], 2), "seconds\n")
-#cat("RMSE:",   sqrt(mean((mf_y - y_true)^2)), "\n")
-#cat("Bias %:", sum(mf_y - y_true) / sum(y_true) * 100, "\n")
-#cat("R2:",     1 - sum((mf_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
-#cat("SRMSE:",  sqrt(mean((mf_y - y_true)^2)) / mean(y_true), "\n\n")
-#plot_obs_pred(y_true, mf_y, "MissForest")
+cat("MissForest:\n")
+cat("Time", round(time_mf["elapsed"], 2), "seconds\n")
+cat("RMSE:",   sqrt(mean((mf_y - y_true)^2)), "\n")
+cat("Bias %:", sum(mf_y - y_true) / sum(y_true) * 100, "\n")
+cat("R2:",     1 - sum((mf_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
+cat("SRMSE:",  sqrt(mean((mf_y - y_true)^2)) / mean(y_true), "\n\n")
+plot_obs_pred(y_true, mf_y, "MissForest")
 ```
 
 ```{r PPCA-results, results='hold'}
@@ -219,13 +234,5 @@ plot_obs_pred(y_true, mlr_y, "MLR")
 #plot_obs_pred(y_true, gam_y, "GAM")
 ```
 
-```{r MICE_DURR-results, results='hold'}
-cat("MICE-DURR:\n")
-cat("Time: ", round(time_mice_durr["elapsed"], 2), "seconds\n")
-cat("RMSE:",   sqrt(mean((mice_durr_y - y_true)^2)), "\n")
-cat("Bias %:", sum(mice_durr_y - y_true) / sum(y_true) * 100, "\n")
-cat("R2:",     1 - sum((mice_durr_y - y_true)^2) / sum((y_true - mean(y_true))^2), "\n")
-cat("SRMSE:",  sqrt(mean((mice_durr_y - y_true)^2)) / mean(y_true), "\n\n")
-```
 
 
