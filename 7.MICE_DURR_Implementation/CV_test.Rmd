@@ -1,0 +1,138 @@
+
+# ENCE - Method Comparison
+
+This .Rmd does a comparison between different imputation methods
+
+## Helper Functions
+```{r helper functions, message=FALSE}
+plot_obs_pred <- function(observed, predicted, method_name = "Method") {
+  lims <- range(c(observed, predicted), na.rm = TRUE)
+  plot(observed, predicted, xlim = lims, ylim = lims,
+       xlab = "Observed", ylab = "Predicted",
+       main = paste(method_name, ": Observed vs Predicted"),
+       pch = 16, cex = 0.7)
+  abline(0, 1, col = "red", lwd = 2)
+  grid()
+}
+
+report_metrics <- function(true, pred, method_name, elapsed) {
+  rmse <- sqrt(mean((pred - true)^2))
+  cat(method_name, "\n", sep = "")
+  cat("Time:  ", round(elapsed, 2), "seconds\n")
+  cat("RMSE:  ", rmse, "\n")
+  cat("Bias %:", sum(pred - true) / sum(true) * 100, "\n")
+  cat("R2:    ", 1 - sum((pred - true)^2) / sum((true - mean(true))^2), "\n")
+  cat("SRMSE: ", rmse / mean(true), "\n\n")
+}
+```
+
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo)
+
+```{r setup, message=FALSE}
+source("idw.R")
+source("MICE_elastic_net_C_implementation/elastic_net_R_glue.R")
+source("elastic_net_C_implementation/elastic_net_R_glue.R")
+source("MICE_DURR_C.R")
+source("ENCE.R")
+
+# Load Met Eireann daily data and station geodata file
+rain     <- read.csv("../met_eireann_daily_data/daily_rainfall_2016.csv")
+stations <- read.csv("../met_eireann_daily_data/station_geodata.csv")
+
+# Attach coordinates to each daily observation
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)#
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Adds a completeness column = observed days / 366.
+obs_per_station$completeness <- obs_per_station$n_obs / 366
+
+# Apply the % cutoff
+cutoff <- 0.50
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+```
+
+```{r run, message=FALSE, results='hide'}
+# Split the observed cells into K-folds
+set.seed(541)
+K <- 10
+# Indexes of observed cells
+observed_idx <- which(!is.na(rain$y))
+# Shuffled repeating pattern 1,2,...,K as long as the number of observed cells
+fold_id      <- sample(rep(1:K, length.out = length(observed_idx)))
+# Groups observed_idx into its fold
+folds        <- split(observed_idx, fold_id)
+
+
+ence_pred <- rep(NA_real_, nrow(rain))
+mice_pred <- rep(NA_real_, nrow(rain))
+ence_time <- 0
+mice_time <- 0
+
+# Loop through each fold
+for (k in seq_len(K)) {
+  cat("Fold", k, "of", K, "\n")
+  
+  test_idx <- folds[[k]]
+  
+  # Hide the masked data for this fold
+  df_miss <- rain
+  df_miss$y[test_idx] <- NA
+  
+  # Run MICE DURR
+
+  mice_time <- mice_time + system.time({
+    C_imp <- MICE_DURR(df_miss, response = "y", m = 1,
+                       max_impute_cycles = 5, hyp_cycles = 2,
+                       init_method = "mean", max_EM_cycles = 8,
+                       nclusters = 1, nthreads = 6L, outfile = NULL,
+                       lambda_options = c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01),
+                       alpha_options  = c(0.1, 0.35, 0.65, 0.9),
+                       transformation = sqrt,
+                       reverse_transformation = function(x) x^2)
+  })["elapsed"]
+
+  # Run ENCE
+  ence_time <- ence_time + system.time({
+    imp_ence <- ENCE(df_miss, response = "y", max_cycles = 30,
+                     init_method = "idw",
+                     x_name = "east", y_name = "north", t_name = "t",
+                     C = 15000,
+                     transformation = sqrt,
+                     reverse_transformation = function(x) x^2,
+                     truth = rain$y, masked_idx = test_idx,
+                     nthreads = 6)
+  })["elapsed"]
+
+  # Fill in imputed values for this fold
+  mice_pred[test_idx] <- C_imp$y[test_idx]
+  ence_pred[test_idx] <- imp_ence$y[test_idx]
+}
+
+y_true <- rain$y[observed_idx]
+y_ence <- ence_pred[observed_idx]
+y_mice <- mice_pred[observed_idx]
+
+# every held-out cell got a prediction
+stopifnot(!anyNA(y_ence), !anyNA(y_mice))
+
+# Print metrics and scatterplots
+report_metrics(y_true, y_ence, "ENCE", ence_time)
+plot_obs_pred(y_true, y_ence, "ENCE")
+report_metrics(y_true, y_mice, "MICE-DURR-C", mice_time)
+plot_obs_pred(y_true, y_mice, "MICE-DURR-C")
+```
