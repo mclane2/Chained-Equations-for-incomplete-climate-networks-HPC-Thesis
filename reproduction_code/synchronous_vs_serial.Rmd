@@ -65,12 +65,15 @@ report_metrics <- function(true, pred, method_name, elapsed) {
 }
 
 plot_obs_pred <- function(observed, predicted, method_name = "Method") {
+  op <- par(pty = "s")
+  on.exit(par(op))
   lims <- range(c(observed, predicted), na.rm = TRUE)
-  plot(observed, predicted, xlim = lims, ylim = lims,
+  plot(observed, predicted,
+       xlim = lims, ylim = lims,
        xlab = "Observed", ylab = "Predicted",
        main = paste(method_name, ": Observed vs Predicted"),
-       pch = 16, cex = 0.7)
-  abline(0, 1, col = "red", lwd = 2)
+       pch = 16, cex = 0.5, col = rgb(0, 0, 0, 0.12))
+  abline(0, 1, col = "red", lwd = 2, lty = 2)
   grid()
 }
 ```
@@ -80,7 +83,7 @@ plot_obs_pred <- function(observed, predicted, method_name = "Method") {
 Split data into 10 folds, mask observed entries and impute for each fold separately
 ```{r run, message=FALSE, results='hide'}
 # Split the observed cells into K-folds
-set.seed(313)
+set.seed(916)
 K <- 10
 # Indexes of observed cells
 observed_idx <- which(!is.na(rain$y))
@@ -201,31 +204,40 @@ plot_obs_pred(true_y, serial_y, "Serial")
 plot_obs_pred(true_y, sync_y, "Synchronous")
 ```
 
-
 ```{r convergence_plot, results='hold'}
 # Plot internal convergence for both methods
+col_serial <- "#234ec2"
+col_sync   <- "#c20d0d"
+
 xlim_range <- c(1, max(length(serial_rmse), length(sync_rmse)))
-plot(serial_rmse, type = "b", col = "blue", pch = 16,
+plot(serial_rmse, type = "b", col = col_serial, pch = 15,
      xlim = xlim_range,
      ylim = range(c(serial_rmse, sync_rmse)),
      xlab = "Cycle", ylab = "Internal RMSE (between cycles)",
      main = "Convergence: Serial vs Synchronous")
-lines(sync_rmse, type = "b", col = "red", pch = 17)
-legend("topright", legend = c("Sequential", "Synchronous"),
-       col = c("blue", "red"), pch = c(16, 17), lty = 1)
+grid()
+lines(serial_rmse, type = "b", col = col_serial, pch = 15)
+lines(sync_rmse,   type = "b", col = col_sync,   pch = 17)
+legend("topright", legend = c("Serial", "Synchronous"),
+       col = c(col_serial, col_sync), pch = c(15, 17), lty = 1)
 ```
 
 ```{r RMSE_plot, results='hold'}
 # Plot validation RMSE for each method
+col_serial <- "#eb7500"
+col_sync   <- "#7008d1"
+
 xlim_range <- c(1, max(length(serial_val), length(sync_val)))
-plot(serial_val, type = "b", col = "blue", pch = 16,
+plot(serial_val, type = "b", col = col_serial, pch = 15,
      xlim = xlim_range,
      ylim = range(c(serial_val, sync_val)),
      xlab = "Cycle", ylab = "Validation RMSE (masked cells)",
-     main = "Validation RMSE: Sequential vs Synchronous")
-lines(sync_val, type = "b", col = "red", pch = 17)
-legend("topright", legend = c("Sequential", "Synchronous"),
-       col = c("blue", "red"), pch = c(16, 17), lty = 1)
+     main = "Validation RMSE: Serial vs Synchronous")
+grid()
+lines(serial_val, type = "b", col = col_serial, pch = 15)
+lines(sync_val,  type = "b", col = col_sync,   pch = 17)
+legend("topright", legend = c("Serial", "Synchronous"),
+       col = c(col_serial, col_sync), pch = c(15, 17), lty = 1)
 ```
 
 ```{r hyperparameters, results='hold'}

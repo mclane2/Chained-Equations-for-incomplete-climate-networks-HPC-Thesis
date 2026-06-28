@@ -1,0 +1,177 @@
+# Setup
+
+Load the Met Eireann daily data (not available in this Github repo)
+
+```{r setup, message=FALSE}
+source("scripts/idw.R")
+source("scripts/ENCE_serial.R")
+source("scripts/ENCE_synchronous.R")
+
+cutoff <- 0.50 # Set completeness cutoff percentage
+
+# Load Met Eireann daily data and station geodata file
+years <- 2016
+files <- sprintf("../met_eireann_daily_data/daily_rainfall_%d.csv", years)
+rain  <- do.call(rbind, lapply(files, read.csv))
+
+stations   <- read.csv("../met_eireann_daily_data/station_geodata.csv")
+
+# Attach coordinates to each daily observation
+missing_geo <- setdiff(unique(rain$stno), stations$stno)
+if (length(missing_geo)) warning("No geodata for stno: ", paste(missing_geo, collapse=", "))
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)#
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Compute total number of days
+total_days <- length(unique(rain$t))
+# Adds a completeness column = observed days / total days.
+obs_per_station$completeness <- obs_per_station$n_obs / total_days
+
+# Apply the % cutoff
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Then mask a fraction of the currently-observed cells
+set.seed(541)
+observed_idx <- which(!is.na(rain$y))
+masked_idx   <- sort(sample(observed_idx, length(observed_idx) * 0.25))
+
+df_miss <- rain
+df_miss$y[masked_idx] <- NA           # hide masked
+
+range(read.csv(files[1])$t) 
+```
+
+## Run all Imputation Methods
+
+```{r run-serial, message=FALSE}
+  serial_time <- system.time({
+    serial_imp <- ENCE_serial(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = masked_idx,
+                lambda_options = c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01),
+                alpha_options  = c(0.1, 0.35, 0.65, 0.9)
+                )
+  })["elapsed"]
+
+
+  serial_rmse <- unlist(attr(serial_imp, "rmse_history"))
+  serial_val  <- unlist(attr(serial_imp, "val_rmse_history"))
+  serial_l <- tail(attr(serial_imp, "ls_history"), 1)[[1]]
+  serial_a <- tail(attr(serial_imp, "as_history"), 1)[[1]]
+```
+
+```{r run-sync, message=FALSE}
+  sync_time <- system.time({
+    sync_imp <- ENCE_sync(df_miss, response = "y", max_cycles = 30,
+                     init_method = "idw",
+                     x_name = "east", y_name = "north", t_name = "t",
+                     C = 15000,
+                     transformation = sqrt,
+                     reverse_transformation = function(x) x^2,
+                     truth = rain$y, masked_idx = masked_idx,
+                     lambda_options = c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01),
+                     alpha_options  = c(0.1, 0.35, 0.65, 0.9),
+                     n_workers = 6)
+  })["elapsed"]
+
+  sync_rmse  <- unlist(attr(sync_imp, "rmse_history"))
+  sync_val   <- unlist(attr(sync_imp, "val_rmse_history"))
+  sync_l <- tail(attr(sync_imp, "ls_history"), 1)[[1]]
+  sync_a <- tail(attr(sync_imp, "as_history"), 1)[[1]]
+```
+
+
+## Results
+```{r metrics}
+true_y     <- rain$y[masked_idx]
+serial_y <- serial_imp$y[masked_idx]
+sync_y  <- sync_imp$y[masked_idx]
+
+report_metrics <- function(true, pred, method_name, elapsed) {
+  rmse <- sqrt(mean((pred - true)^2))
+  cat(method_name, "\n", sep = "")
+  cat("Time:  ", round(elapsed, 2), "seconds\n")
+  cat("RMSE:  ", rmse, "\n")
+  cat("Bias %:", sum(pred - true) / sum(true) * 100, "\n")
+  cat("R2:    ", 1 - sum((pred - true)^2) / sum((true - mean(true))^2), "\n")
+  cat("SRMSE: ", rmse / mean(true), "\n\n")
+}
+
+plot_obs_pred <- function(observed, predicted, method_name = "Method") {
+
+  op <- par(pty = "s")
+  on.exit(par(op))
+
+  lims <- range(c(observed, predicted), na.rm = TRUE)
+
+  plot(observed, predicted,
+       xlim = lims, ylim = lims,
+       xlab = "Observed", ylab = "Predicted",
+       main = paste(method_name, ": Observed vs Predicted"),
+       pch = 16, cex = 0.5, col = rgb(0, 0, 0, 0.12))
+
+  abline(0, 1, col = "red", lwd = 2, lty = 2)
+  grid()
+}
+
+
+report_metrics(true_y, serial_y, "Serial", serial_time)
+report_metrics(true_y, sync_y, "Synchronous", sync_time)
+```
+
+```{r scatter-plot, results='hold'}
+plot_obs_pred(true_y, serial_y, "Serial")
+plot_obs_pred(true_y, sync_y, "Synchronous")
+```
+
+```{r convergence_plot, results='hold'}
+# Plot internal convergence for both methods
+col_serial <- "steelblue"
+col_sync   <- "firebrick"
+
+xlim_range <- c(1, max(length(serial_rmse), length(sync_rmse)))
+plot(serial_rmse, type = "b", col = col_serial, pch = 15,
+     xlim = xlim_range,
+     ylim = range(c(serial_rmse, sync_rmse)),
+     xlab = "Cycle", ylab = "Internal RMSE (between cycles)",
+     main = "Convergence: Serial vs Synchronous")
+grid()
+lines(serial_rmse, type = "b", col = col_serial, pch = 15)
+lines(sync_rmse,   type = "b", col = col_sync,   pch = 17)
+legend("topright", legend = c("Serial", "Synchronous"),
+       col = c(col_serial, col_sync), pch = c(15, 17), lty = 1)
+```
+
+```{r RMSE_plot, results='hold'}
+# Plot validation RMSE for each method
+col_serial <- "darkorange3"
+col_sync   <- "purple3"
+
+xlim_range <- c(1, max(length(serial_val), length(sync_val)))
+plot(serial_val, type = "b", col = col_serial, pch = 15,
+     xlim = xlim_range,
+     ylim = range(c(serial_val, sync_val)),
+     xlab = "Cycle", ylab = "Validation RMSE (masked cells)",
+     main = "Validation RMSE: Serial vs Synchronous")
+grid()
+lines(serial_val, type = "b", col = col_serial, pch = 15)
+lines(sync_val,  type = "b", col = col_sync,   pch = 17)
+legend("topright", legend = c("Serial", "Synchronous"),
+       col = c(col_serial, col_sync), pch = c(15, 17), lty = 1)
+```
