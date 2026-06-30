@@ -18,8 +18,11 @@ source("scripts/idw.R")
 source("scripts/ENCE_serial.R")
 source("scripts/ENCE_synchronous.R")
 
+lambda_options <- c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01)
+alpha_options  <- c(0.1, 0.35, 0.65, 0.9)
+
 # Load Met Eireann daily data and station geodata file
-years <- 2016:2025
+years <- 2016
 files <- sprintf("../met_eireann_daily_data/daily_rainfall_%d.csv", years)
 rain  <- do.call(rbind, lapply(files, read.csv))
 
@@ -84,6 +87,10 @@ lambda_match <- 0L
 lambda_valid <- 0L
 alpha_match  <- 0L
 alpha_valid  <- 0L
+serial_lambda_final <- vector("list", K)
+sync_lambda_final   <- vector("list", K)
+serial_alpha_final  <- vector("list", K)
+sync_alpha_final    <- vector("list", K)
 
 # Loop through each fold
 for (k in seq_len(K)) {
@@ -104,8 +111,8 @@ for (k in seq_len(K)) {
                 transformation = sqrt,
                 reverse_transformation = function(x) x^2,
                 truth = rain$y, masked_idx = test_idx,
-                lambda_options = c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01),
-                alpha_options  = c(0.1, 0.35, 0.65, 0.9)
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options
                 )
   })["elapsed"]
 
@@ -118,8 +125,8 @@ for (k in seq_len(K)) {
                      transformation = sqrt,
                      reverse_transformation = function(x) x^2,
                      truth = rain$y, masked_idx = test_idx,
-                     lambda_options = c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01),
-                     alpha_options  = c(0.1, 0.35, 0.65, 0.9),
+                     lambda_options = lambda_options,
+                     alpha_options  = alpha_options,
                      n_workers = 16)
   })["elapsed"]
 
@@ -134,10 +141,18 @@ for (k in seq_len(K)) {
   sync_val_list[[k]]    <- attr(sync_imp,   "val_rmse_history")
 
   # Record hyperparameter values for this fold
-  serial_l <- attr(serial_imp, "ls_history")[[2]]
-  serial_a <- attr(serial_imp, "as_history")[[2]]
-  sync_l <- attr(sync_imp,   "ls_history")[[2]]
-  sync_a <- attr(sync_imp,   "as_history")[[2]]
+  serial_ls <- attr(serial_imp, "ls_history")
+  serial_as <- attr(serial_imp, "as_history")
+  sync_ls   <- attr(sync_imp,   "ls_history")
+  sync_as   <- attr(sync_imp,   "as_history")
+  serial_l <- serial_ls[[2]]
+  serial_a <- serial_as[[2]]
+  sync_l   <- sync_ls[[2]]
+  sync_a   <- sync_as[[2]]
+  serial_lambda_final[[k]] <- serial_ls[[length(serial_ls)]]
+  serial_alpha_final[[k]]  <- serial_as[[length(serial_as)]]
+  sync_lambda_final[[k]]   <- sync_ls[[length(sync_ls)]]
+  sync_alpha_final[[k]]    <- sync_as[[length(sync_as)]]
 
   # Sum the number of matching hyperparameters and keep track
   vl <- !is.na(serial_l) & !is.na(sync_l)
@@ -225,6 +240,11 @@ results <- list(
   alpha_match  = alpha_match,
   alpha_valid  = alpha_valid,
 
+  serial_lambda_final = serial_lambda_final,
+  sync_lambda_final   = sync_lambda_final,
+  serial_alpha_final  = serial_alpha_final,
+  sync_alpha_final    = sync_alpha_final,
+
   # Station Identifiers
   stno  = rain$stno[observed_idx],
   t     = rain$t[observed_idx],
@@ -243,6 +263,15 @@ cat("Saved results to", results_file, "\n")
 log_lines <- capture.output({
   report_metrics(true_y, serial_y, "Serial", serial_time)
   report_metrics(true_y, sync_y, "Synchronous", sync_time)
+
+  cat("\nFinal lambda chosen (serial), pooled over", K, "folds\n")
+  print(table(factor(unlist(serial_lambda_final), levels = sort(lambda_options))))
+  cat("\nFinal lambda chosen (sync), pooled over", K, "folds\n")
+  print(table(factor(unlist(sync_lambda_final), levels = sort(lambda_options))))
+  cat("\nFinal alpha chosen (serial), pooled over", K, "folds\n")
+  print(table(factor(unlist(serial_alpha_final), levels = sort(alpha_options))))
+  cat("\nFinal alpha chosen (sync), pooled over", K, "folds\n")
+  print(table(factor(unlist(sync_alpha_final), levels = sort(alpha_options))))
 
   cat("Lambda agreement, pooled over", K, "folds\n")
   cat("  ", lambda_match, "/", lambda_valid, "\n")

@@ -19,7 +19,7 @@ source("scripts/MICE_serial.R")
 source("scripts/MICE_synchronous.R")
 
 # Load Met Eireann daily data and station geodata file
-years <- 2016:2025
+years <- 2016
 files <- sprintf("../met_eireann_daily_data/daily_rainfall_%d.csv", years)
 rain  <- do.call(rbind, lapply(files, read.csv))
 

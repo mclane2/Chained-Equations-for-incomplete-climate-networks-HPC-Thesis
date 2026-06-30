@@ -1,0 +1,144 @@
+
+# Filename: section_4_1_plots.Rmd
+# Author: Marc Lane
+
+# ENCE & MICE - Synchronous vs Serial Plots
+
+Reads the .rds outputs from cluster runs synchronous_vs_serial.Rmd
+and synchronous_vs_serial_mice.Rmd, and reproduces the Section 4.1 prints and
+plots
+
+## Setup
+
+```{r setup, message=FALSE}
+cutoff <- 0.50  # Completeness cutoff to plot
+
+tag       <- sprintf("cutoff%02d", round(cutoff * 100))
+ence_file <- sprintf("section_4_1_ENCE_sync_vs_serial_%s.rds", tag)
+#mice_file <- sprintf("section_4_1_MICE_sync_vs_serial_%s.rds", tag)
+
+ence <- readRDS(ence_file)
+#mice <- readRDS(mice_file)
+```
+
+## Helper Functions
+
+```{r helper_functions, message=FALSE}
+report_metrics <- function(true, pred, method_name, elapsed) {
+  rmse <- sqrt(mean((pred - true)^2))
+  cat(method_name, "\n", sep = "")
+  cat("Time:  ", round(elapsed, 2), "seconds\n")
+  cat("RMSE:  ", rmse, "\n")
+  cat("Bias %:", sum(pred - true) / sum(true) * 100, "\n")
+  cat("R2:    ", 1 - sum((pred - true)^2) / sum((true - mean(true))^2), "\n")
+  cat("SRMSE: ", rmse / mean(true), "\n\n")
+}
+
+plot_obs_pred <- function(observed, predicted, method_name = "Method") {
+  op <- par(pty = "s")
+  on.exit(par(op))
+  lims <- range(c(observed, predicted), na.rm = TRUE)
+  plot(observed, predicted,
+       xlim = lims, ylim = lims,
+       xlab = "Observed", ylab = "Predicted",
+       main = paste(method_name, ": Observed vs Predicted"),
+       pch = 16, cex = 0.5, col = rgb(0, 0, 0, 0.12))
+  abline(0, 1, col = "red", lwd = 2, lty = 2)
+  grid()
+}
+```
+
+# ENCE
+
+```{r ence_unpack}
+meta <- ence$meta
+cat("ENCE Section 4.1\n")
+cat("cutoff:", meta$cutoff, " K:", meta$K, " seed:", meta$seed,
+    " stations:", meta$n_stations, " observed:", meta$n_observed, "\n\n")
+
+true_y      <- ence$true_y
+serial_y    <- ence$serial_y
+sync_y      <- ence$sync_y
+serial_rmse <- ence$serial_rmse
+sync_rmse   <- ence$sync_rmse
+serial_val  <- ence$serial_val
+sync_val    <- ence$sync_val
+serial_time <- ence$serial_time
+sync_time   <- ence$sync_time
+```
+
+```{r ence_metrics, results='hold'}
+report_metrics(true_y, serial_y, "Serial", serial_time)
+report_metrics(true_y, sync_y, "Synchronous", sync_time)
+
+cat("Lambda agreement, pooled over", meta$K, "folds\n")
+cat("  ", ence$lambda_match, "/", ence$lambda_valid, "\n")
+cat("  ", round(100 * ence$lambda_match / ence$lambda_valid, 1), "%\n")
+cat("Alpha agreement, pooled over", meta$K, "folds\n")
+cat("  ", ence$alpha_match, "/", ence$alpha_valid, "\n")
+cat("  ", round(100 * ence$alpha_match / ence$alpha_valid, 1), "%\n")
+```
+
+```{r ence_scatterplots, results='hold'}
+plot_obs_pred(true_y, serial_y, "Serial")
+plot_obs_pred(true_y, sync_y, "Synchronous")
+```
+
+```{r ence_convergence_plot, results='hold'}
+col_serial <- "#234ec2"
+col_sync   <- "#c20d0d"
+
+xlim_range <- c(1, max(length(serial_rmse), length(sync_rmse)))
+plot(serial_rmse, type = "b", col = col_serial, pch = 15,
+     xlim = xlim_range,
+     ylim = range(c(serial_rmse, sync_rmse)),
+     xlab = "Cycle", ylab = "Internal RMSE (between cycles)",
+     main = "Convergence: Serial vs Synchronous")
+grid()
+lines(serial_rmse, type = "b", col = col_serial, pch = 15)
+lines(sync_rmse,   type = "b", col = col_sync,   pch = 17)
+legend("topright", legend = c("Serial", "Synchronous"),
+       col = c(col_serial, col_sync), pch = c(15, 17), lty = 1)
+```
+
+```{r ence_RMSE_plot, results='hold'}
+col_serial <- "#eb7500"
+col_sync   <- "#7008d1"
+
+xlim_range <- c(1, max(length(serial_val), length(sync_val)))
+plot(serial_val, type = "b", col = col_serial, pch = 15,
+     xlim = xlim_range,
+     ylim = range(c(serial_val, sync_val)),
+     xlab = "Cycle", ylab = "Validation RMSE (masked cells)",
+     main = "Validation RMSE: Serial vs Synchronous")
+grid()
+lines(serial_val, type = "b", col = col_serial, pch = 15)
+lines(sync_val,  type = "b", col = col_sync,   pch = 17)
+legend("topright", legend = c("Serial", "Synchronous"),
+       col = c(col_serial, col_sync), pch = c(15, 17), lty = 1)
+```
+
+# MICE
+```{r mice_unpack}
+#meta <- mice$meta
+#cat("MICE Section 4.1\n")
+#cat("cutoff:", meta$cutoff, " K:", meta$K, " seed:", meta$seed,
+#    " stations:", meta$n_stations, " observed:", meta$n_observed, "\n\n")
+
+#true_y      <- mice$true_y
+#serial_y    <- mice$serial_y
+#sync_y      <- mice$sync_y
+#serial_time <- mice$serial_time
+#sync_time   <- mice$sync_time
+```
+
+```{r mice_metrics, results='hold'}
+#report_metrics(true_y, serial_y, "Serial", serial_time)
+#report_metrics(true_y, sync_y, "Synchronous", sync_time)
+```
+
+```{r mice_scatterplots, results='hold'}
+# Plot observed vs predicted scatterplots
+#plot_obs_pred(true_y, serial_y, "Serial")
+#plot_obs_pred(true_y, sync_y, "Synchronous")
+```
