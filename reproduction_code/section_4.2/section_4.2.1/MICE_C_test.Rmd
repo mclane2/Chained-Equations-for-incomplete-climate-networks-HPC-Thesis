@@ -1,0 +1,229 @@
+
+# Filename: MICE_C_test.Rmd
+# Author: Marc Lane
+
+# MICE DURR - C Implementation test
+
+Run this .Rmd to reproduce the results from Section 4.2 of my thesis for the MICE algorithm
+
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo), apply the station completeness cutoff percentage
+
+```{r setup, message=FALSE}
+
+cutoff <- 0.50 # Set completeness cutoff percentage
+
+source("scripts/idw.R")
+source("scripts/MICE_serial.R")
+source("scripts/MICE_synchronous_parr.R")
+source("scripts/MICE_C.R")
+source("scripts/MICE_elastic_net_C_implementation/elastic_net_R_glue.R")
+
+lambda_options <- c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01)
+alpha_options  <- c(0.1, 0.35, 0.65, 0.9)
+
+# Load Met Eireann daily data and station geodata file
+years <- 2016
+files <- sprintf("../met_eireann_daily_data/daily_rainfall_%d.csv", years)
+rain  <- do.call(rbind, lapply(files, read.csv))
+
+stations   <- read.csv("../met_eireann_daily_data/station_geodata.csv")
+
+# Attach coordinates to each daily observation
+missing_geo <- setdiff(unique(rain$stno), stations$stno)
+if (length(missing_geo)) warning("No geodata for stno: ", paste(missing_geo, collapse=", "))
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Compute total number of days
+total_days <- length(unique(rain$t))
+# Adds a completeness column = observed days / total days.
+obs_per_station$completeness <- obs_per_station$n_obs / total_days
+
+# Apply the % cutoff
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Setup output file names
+tag          <- sprintf("cutoff%02d", round(cutoff * 100))
+results_file <- sprintf("section_4_2_MICE_C_implementation_%s.rds", tag)
+log_file     <- sprintf("section_4_2_MICE_C_implementation_%s.txt", tag)
+```
+
+# Imputation
+ 
+Split data into 10 folds, mask observed entries and impute for each fold separately
+```{r run, message=FALSE, results='hide'}
+# Split the observed cells into K-folds
+set.seed(916)
+K <- 10
+# Indexes of observed cells
+observed_idx <- which(!is.na(rain$y))
+# Shuffled repeating pattern 1,2,...,K as long as the number of observed cells
+fold_id      <- sample(rep(1:K, length.out = length(observed_idx)))
+# Groups observed_idx into its fold
+folds        <- split(observed_idx, fold_id)
+
+# Initialising variables
+serial_pred <- rep(NA_real_, nrow(rain))
+sync_pred   <- rep(NA_real_, nrow(rain))
+C_pred   <- rep(NA_real_, nrow(rain))
+serial_time <- 0
+sync_time   <- 0
+C_time   <- 0
+serial_rmse_list <- vector("list", K)
+sync_rmse_list <- vector("list", K)
+C_rmse_list <- vector("list", K)
+
+# Loop through each fold
+for (k in seq_len(K)) {
+  cat("Fold", k, "of", K, "\n")
+  
+  test_idx <- folds[[k]]
+  
+  # Hide the masked data for this fold
+  df_miss <- rain
+  df_miss$y[test_idx] <- NA
+  
+  # Run serial MICE
+    serial_time <- serial_time + system.time({
+    serial_imp <- MICE_DURR_serial(df_miss, response = "y", m = 4,
+                       max_impute_cycles = 5, hyp_cycles = 2,
+                       init_method = "idw", max_EM_cycles = 8,
+                       nclusters = 1, outfile = "/dev/null",
+                       lambda_options = lambda_options,
+                       alpha_options  = alpha_options,
+                       transformation = sqrt,
+                       reverse_transformation = function(x) x^2)
+  })["elapsed"]
+
+  # Run synchronous MICE
+  sync_time <- sync_time + system.time({
+    sync_imp <- MICE_DURR_sync_par(df_miss, response = "y", m = 4,
+                                 max_impute_cycles = 5, hyp_cycles = 2, 
+                                 init_method = "idw", max_EM_cycles = 8, 
+                                 nclusters = 1, outfile = "/dev/null",
+                                 n_workers = 16,
+                                 lambda_options = lambda_options,
+                                 alpha_options  = alpha_options,
+                                 transformation = sqrt,
+                                 reverse_transformation = {function(x) x^2})
+  })["elapsed"]
+
+  C_time <- C_time + system.time({
+    C_imp <- MICE_DURR_C(df_miss, response = "y", m = 4,
+                       max_impute_cycles = 5, hyp_cycles = 2,
+                       init_method = "idw", max_EM_cycles = 8,
+                       nclusters = 1, nthreads = 16, outfile = NULL,
+                       lambda_options = lambda_options,
+                       alpha_options  = alpha_options,
+                       transformation = sqrt,
+                       reverse_transformation = function(x) x^2)
+  })["elapsed"]
+
+
+  # Fill in imputed values for this fold
+  serial_pred[test_idx] <- serial_imp$y[test_idx]
+  sync_pred[test_idx] <- sync_imp$y[test_idx]
+  C_pred[test_idx] <- C_imp$y[test_idx]
+
+  # Record RMSE lists for this fold
+  serial_rmse_list[[k]] <- attr(serial_imp, "rmse_histories")
+  sync_rmse_list[[k]]   <- attr(sync_imp,   "rmse_histories")
+  C_rmse_list[[k]]   <- attr(C_imp,   "rmse_histories")
+
+  cat("Cumulative  R serial:", round(serial_time, 1), "s   R sync:", round(sync_time, 1), "s   C:", round(C_time, 1) ,"\n")
+}
+
+true_y   <- rain$y[observed_idx]
+serial_y <- serial_pred[observed_idx]
+sync_y   <- sync_pred[observed_idx]
+C_y   <- C_pred[observed_idx]
+
+# Check every held-out cell got a prediction
+stopifnot(!anyNA(serial_y), !anyNA(sync_y), !anyNA(C_y))
+```
+
+## Helper Functions
+```{r helper functions, message=FALSE}
+report_metrics <- function(true, pred, method_name, elapsed) {
+  rmse <- sqrt(mean((pred - true)^2))
+  cat(method_name, "\n", sep = "")
+  cat("Time:  ", round(elapsed, 2), "seconds\n")
+  cat("RMSE:  ", rmse, "\n")
+  cat("Bias %:", sum(pred - true) / sum(true) * 100, "\n")
+  cat("R2:    ", 1 - sum((pred - true)^2) / sum((true - mean(true))^2), "\n")
+  cat("SRMSE: ", rmse / mean(true), "\n\n")
+}
+```
+
+# Save Results
+
+```{r save_results}
+results <- list(
+  # Run metadata, so this file identifies itself with no guessing
+  meta = list(
+    description = "MICE C implementation test, Section 4.2",
+    cutoff      = cutoff,
+    K           = K,
+    seed        = 916,
+    years       = years,
+    n_stations  = length(keep),
+    n_observed  = length(observed_idx),
+    run_time    = Sys.time()
+  ),
+
+  # Timing in seconds summed over all K folds
+  serial_time = serial_time,
+  sync_time   = sync_time,
+  C_time   = C_time,
+
+  # Held-out predictions for observed-vs-predicted scatterplots
+  true_y   = true_y,
+  serial_y = serial_y,
+  sync_y   = sync_y,
+  C_y   = C_y,
+
+
+  # Raw per-fold histories (length-K lists)
+  serial_rmse_list = serial_rmse_list,
+  sync_rmse_list   = sync_rmse_list,
+  C_rmse_list   = C_rmse_list,
+
+  # Station Identifiers
+  stno  = rain$stno[observed_idx],
+  t     = rain$t[observed_idx],
+  east  = rain$east[observed_idx],
+  north = rain$north[observed_idx],
+  fold  = fold_id
+)
+
+saveRDS(results, results_file)
+cat("Saved results to", results_file, "\n")
+```
+
+# Save printed log
+
+```{r save_log}
+log_lines <- capture.output({
+  report_metrics(true_y, serial_y, "Serial", serial_time)
+  report_metrics(true_y, sync_y, "Synchronous", sync_time)
+  report_metrics(true_y, C_y, "C", C_time)
+})
+
+writeLines(log_lines, log_file)
+cat(log_lines, sep = "\n")
+cat("\nSaved log to", log_file, "\n")
+```
