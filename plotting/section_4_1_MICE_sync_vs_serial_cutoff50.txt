@@ -1,0 +1,14 @@
+Serial
+Time:   9673.12 seconds
+RMSE:   2.168698 
+Bias %: -5.08539 
+R2:     0.8575797 
+SRMSE:  0.6640163 
+
+Synchronous
+Time:   9634.94 seconds
+RMSE:   2.160694 
+Bias %: -5.171041 
+R2:     0.8586291 
+SRMSE:  0.6615655 
+

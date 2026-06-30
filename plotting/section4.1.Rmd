@@ -15,10 +15,11 @@ cutoff <- 0.50  # Completeness cutoff to plot
 
 tag       <- sprintf("cutoff%02d", round(cutoff * 100))
 ence_file <- sprintf("section_4_1_ENCE_sync_vs_serial_%s.rds", tag)
-#mice_file <- sprintf("section_4_1_MICE_sync_vs_serial_%s.rds", tag)
+mice_file <- sprintf("section_4_1_MICE_sync_vs_serial_%s.rds", tag)
+ence_txt <- sprintf("section_4_1_ENCE_sync_vs_serial_%s.txt", tag)
 
 ence <- readRDS(ence_file)
-#mice <- readRDS(mice_file)
+mice <- readRDS(mice_file)
 ```
 
 ## Helper Functions
@@ -50,11 +51,13 @@ plot_obs_pred <- function(observed, predicted, method_name = "Method") {
 
 # ENCE
 
-```{r ence_unpack}
+```{r ence_unpack, results='hold'}
 meta <- ence$meta
 cat("ENCE Section 4.1\n")
 cat("cutoff:", meta$cutoff, " K:", meta$K, " seed:", meta$seed,
-    " stations:", meta$n_stations, " observed:", meta$n_observed, "\n\n")
+    " stations:", meta$n_stations, " observed:", meta$n_observed,
+    " n_years:", length(meta$years),
+    " years:", paste(meta$years, collapse = ", "), "\n\n")
 
 true_y      <- ence$true_y
 serial_y    <- ence$serial_y
@@ -118,27 +121,33 @@ legend("topright", legend = c("Serial", "Synchronous"),
        col = c(col_serial, col_sync), pch = c(15, 17), lty = 1)
 ```
 
+```{r ence_hyperparameters}
+cat(readLines(ence_txt), sep = "\n")
+```
+
 # MICE
 ```{r mice_unpack}
-#meta <- mice$meta
-#cat("MICE Section 4.1\n")
-#cat("cutoff:", meta$cutoff, " K:", meta$K, " seed:", meta$seed,
-#    " stations:", meta$n_stations, " observed:", meta$n_observed, "\n\n")
+meta <- mice$meta
+cat("MICE Section 4.1\n")
+cat("cutoff:", meta$cutoff, " K:", meta$K, " seed:", meta$seed,
+    " stations:", meta$n_stations, " observed:", meta$n_observed,
+    " n_years:", length(meta$years),
+    " years:", paste(meta$years, collapse = ", "), "\n\n")
 
-#true_y      <- mice$true_y
-#serial_y    <- mice$serial_y
-#sync_y      <- mice$sync_y
-#serial_time <- mice$serial_time
-#sync_time   <- mice$sync_time
+true_y      <- mice$true_y
+serial_y    <- mice$serial_y
+sync_y      <- mice$sync_y
+serial_time <- mice$serial_time
+sync_time   <- mice$sync_time
 ```
 
 ```{r mice_metrics, results='hold'}
-#report_metrics(true_y, serial_y, "Serial", serial_time)
-#report_metrics(true_y, sync_y, "Synchronous", sync_time)
+report_metrics(true_y, serial_y, "Serial", serial_time)
+report_metrics(true_y, sync_y, "Synchronous", sync_time)
 ```
 
 ```{r mice_scatterplots, results='hold'}
 # Plot observed vs predicted scatterplots
-#plot_obs_pred(true_y, serial_y, "Serial")
-#plot_obs_pred(true_y, sync_y, "Synchronous")
+plot_obs_pred(true_y, serial_y, "Serial")
+plot_obs_pred(true_y, sync_y, "Synchronous")
 ```

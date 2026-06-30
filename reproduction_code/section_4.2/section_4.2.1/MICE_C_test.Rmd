@@ -16,7 +16,7 @@ cutoff <- 0.50 # Set completeness cutoff percentage
 
 source("scripts/idw.R")
 source("scripts/MICE_serial.R")
-source("scripts/MICE_synchronous_parr.R")
+source("scripts/MICE_synchronous_parallel.R")
 source("scripts/MICE_C.R")
 source("scripts/MICE_elastic_net_C_implementation/elastic_net_R_glue.R")
 
