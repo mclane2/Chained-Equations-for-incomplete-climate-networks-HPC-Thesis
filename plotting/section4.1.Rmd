@@ -2,7 +2,7 @@
 # Filename: section_4_1_plots.Rmd
 # Author: Marc Lane
 
-# ENCE & MICE - Synchronous vs Serial Plots
+# ENCE and MICE - Synchronous vs Serial Plots
 
 Reads the .rds outputs from cluster runs synchronous_vs_serial.Rmd
 and synchronous_vs_serial_mice.Rmd, and reproduces the Section 4.1 prints and
@@ -64,22 +64,28 @@ serial_y    <- ence$serial_y
 sync_y      <- ence$sync_y
 serial_rmse <- ence$serial_rmse
 sync_rmse   <- ence$sync_rmse
-serial_val  <- ence$serial_val
-sync_val    <- ence$sync_val
 serial_time <- ence$serial_time
 sync_time   <- ence$sync_time
+serial_val_list <- ence$serial_val_list
+sync_val_list   <- ence$sync_val_list
+
+# Truncate val rmse to the shortest-converging fold so every plotted cycle is a full K-fold average
+n_cut <- min(sapply(serial_val_list, length), sapply(sync_val_list, length))
+cat("Truncating validation RMSE curves to", n_cut, "cycles (shortest converging fold)\n")
+serial_val <- rowMeans(sapply(serial_val_list, function(v) v[1:n_cut]))
+sync_val   <- rowMeans(sapply(sync_val_list,   function(v) v[1:n_cut]))
 ```
 
 ```{r ence_metrics, results='hold'}
 report_metrics(true_y, serial_y, "Serial", serial_time)
 report_metrics(true_y, sync_y, "Synchronous", sync_time)
 
-cat("Lambda agreement, pooled over", meta$K, "folds\n")
-cat("  ", ence$lambda_match, "/", ence$lambda_valid, "\n")
-cat("  ", round(100 * ence$lambda_match / ence$lambda_valid, 1), "%\n")
-cat("Alpha agreement, pooled over", meta$K, "folds\n")
-cat("  ", ence$alpha_match, "/", ence$alpha_valid, "\n")
-cat("  ", round(100 * ence$alpha_match / ence$alpha_valid, 1), "%\n")
+#cat("Lambda agreement, pooled over", meta$K, "folds\n")
+#cat("  ", ence$lambda_match, "/", ence$lambda_valid, "\n")
+#cat("  ", round(100 * ence$lambda_match / ence$lambda_valid, 1), "%\n")
+#cat("Alpha agreement, pooled over", meta$K, "folds\n")
+#cat("  ", ence$alpha_match, "/", ence$alpha_valid, "\n")
+#cat("  ", round(100 * ence$alpha_match / ence$alpha_valid, 1), "%\n")
 ```
 
 ```{r ence_scatterplots, results='hold'}
@@ -124,6 +130,7 @@ legend("topright", legend = c("Serial", "Synchronous"),
 ```{r ence_hyperparameters}
 cat(readLines(ence_txt), sep = "\n")
 ```
+
 
 # MICE
 ```{r mice_unpack}
