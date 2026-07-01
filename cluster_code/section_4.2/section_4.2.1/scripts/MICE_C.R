@@ -128,6 +128,9 @@ MICE_DURR_C <- function(df, response = "y", m = 4,
   params <- Reduce(`+`, lapply(results, `[[`, "params")) / m
   colnames(params) <- names(df)
   rmse_histories <- lapply(results, `[[`, "rmse_history")
+  lambdas_list      <- lapply(results, `[[`, "lambdas")
+  alphas_list       <- lapply(results, `[[`, "alphas")
+  beta_history_list <- lapply(results, `[[`, "beta_history")
   
   # Iterator and convergence tracking
   i <- 1; old_rmse <- .Machine$double.xmax; new_rmse <- .Machine$double.xmax
@@ -170,7 +173,10 @@ MICE_DURR_C <- function(df, response = "y", m = 4,
   df[response] <- reverse_transformation(df[response])
 
   df <- as.data.frame(df)
-  attr(df, "rmse_histories") <- rmse_histories
+  attr(df, "rmse_histories")    <- rmse_histories
+  attr(df, "lambdas_list")      <- lambdas_list
+  attr(df, "alphas_list")       <- alphas_list
+  attr(df, "beta_history_list") <- beta_history_list
   return(df)
 }
 
@@ -205,6 +211,7 @@ MICE_get_params <- function(df, missing_idx, max_cycles = 16,
 
   # Track RMSE per cycle
   rmse_history <- c()
+  beta_history <- list()
 
   # If there's only one option, don't do CV, use fixed alpha/lambda
   # Otherwise NA_real_ will trigger CV of lambda/allpha_options
@@ -263,6 +270,7 @@ MICE_get_params <- function(df, missing_idx, max_cycles = 16,
                               lambdas = lambda_options, alphas = alpha_options,
                               nfolds = nfolds, nthreads = nthreads)
 
+    beta_history[[i]] <- imputed_df$betas
     df        <- as.data.frame(imputed_df$df)
     names(df) <- col_names
     ls        <- imputed_df$lambda
@@ -300,7 +308,7 @@ MICE_get_params <- function(df, missing_idx, max_cycles = 16,
     betas[, column] <- as.matrix(coef(model))[, 1]
   }
 
-  return(list(params = betas, rmse_history = rmse_history))
+  return(list(params = betas, rmse_history = rmse_history, lambdas = ls, alphas = as, beta_history = beta_history))
 
 }
 

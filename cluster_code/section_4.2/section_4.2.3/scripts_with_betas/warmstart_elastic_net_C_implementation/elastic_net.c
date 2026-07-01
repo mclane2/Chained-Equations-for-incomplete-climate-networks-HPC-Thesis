@@ -5,11 +5,10 @@
  * (Driver for functions in elastic_net_functions.c)
  * 
  * Version 2 - Added warm start optimization
- * Version 3 - Added edits for active set optimization
  * 
  * Author: M. Lane
- * Version: 3.0
- * Date: 2026-06-12
+ * Version: 2.0
+ * Date: 2026-06-07
  */
 
 #include <stdlib.h>
@@ -32,13 +31,11 @@ int elastic_net_path(const double *Z_in, const double *z_in, int n, int p,
     double *r    = malloc((size_t)n * sizeof(double));
     double *Zm   = malloc((size_t)p * sizeof(double));
     double *Zs   = malloc((size_t)p * sizeof(double));
-    double *beta = calloc((size_t)p, sizeof(double));
-    int *is_active  = malloc((size_t)p * sizeof(int));
-    int *active_idx = malloc((size_t)p * sizeof(int));
+    double *beta = calloc((size_t)p, sizeof(double)); 
 
     /* Allocation error check */
-    if (!Z || !z || !r || !Zm || !Zs || !beta || !is_active || !active_idx) {
-        free(Z); free(z); free(r); free(Zm); free(Zs); free(beta); free(is_active); free(active_idx);
+    if (!Z || !z || !r || !Zm || !Zs || !beta) {
+        free(Z); free(z); free(r); free(Zm); free(Zs); free(beta);
         return -1;
     }
 
@@ -58,7 +55,7 @@ int elastic_net_path(const double *Z_in, const double *z_in, int n, int p,
     for (int l = 0; l < n_lambda; ++l) {
 
         /* beta and r carry over from the previous lambda  (warm start)*/
-        status |= coord_descent(Z, r, beta, n, p, lambdas[l] / zs, alpha, thresh, maxit, is_active, active_idx);
+        status |= coord_descent(Z, r, beta, n, p, lambdas[l] / zs, alpha, thresh, maxit);
 
         /* Copy out, then back-transform the copy so working beta stays standardised */
         double *bcol = beta_out + (size_t)l * p;
@@ -66,6 +63,6 @@ int elastic_net_path(const double *Z_in, const double *z_in, int n, int p,
         intercept_out[l] = back_transform(bcol, Zm, Zs, zm, zs, p);
     }
 
-    free(Z); free(z); free(r); free(Zm); free(Zs); free(beta); free(is_active); free(active_idx);
+    free(Z); free(z); free(r); free(Zm); free(Zs); free(beta);
     return status;
 }

@@ -21,12 +21,12 @@ set -euo pipefail
 rm -f *.o *.so
 
 # Compile + link with OpenMP.
-PKG_CFLAGS="-fopenmp -O3 -march=native -funroll-loops -flto -Wall -Wextra" \
+PKG_CFLAGS="-fopenmp -O3 -march=native -funroll-loops -flto -Wall -Wextra -DWRITE_BETAS" \
 PKG_LIBS="-fopenmp -flto" \
 R CMD SHLIB elastic_net_functions.c elastic_net.c ENCE_impute.c elastic_net_R_wrapper.c \
-  -o naive_ENCE_impute.so
+  -o warmstart_ENCE_impute.so
 
 # Clean up .o files
 rm -f *.o
 
-echo "Built naive_ENCE_impute.so"
+echo "Built warmstart_ENCE_impute.so"

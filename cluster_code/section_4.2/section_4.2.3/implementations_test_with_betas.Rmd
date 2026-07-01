@@ -1,0 +1,201 @@
+
+# Filename: implementations_test.Rmd
+# Author: Marc Lane
+
+# ENCE - Implementations with betas
+
+Run this .Rmd to reproduce the results from the first part of Section 4.2 of my thesis
+
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo), apply the station completeness cutoff percentage
+
+```{r setup, message=FALSE}
+
+cutoff <- 0.50 # Set completeness cutoff percentage
+
+source("scripts_with_betas/idw.R")
+source("scripts_with_betas/ENCE_C_naive.R")
+source("scripts_with_betas/naive_elastic_net_C_implementation/elastic_net_R_glue.R")
+source("scripts_with_betas/ENCE_C_warmstart.R")
+source("scripts_with_betas/warmstart_elastic_net_C_implementation/elastic_net_R_glue.R")
+source("scripts_with_betas/ENCE_C_active.R")
+source("scripts_with_betas/active_elastic_net_C_implementation/elastic_net_R_glue.R")
+
+lambda_options <- c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01)
+alpha_options  <- c(0.1, 0.35, 0.65, 0.9)
+
+# Load Met Eireann daily data and station geodata file
+years <- 2016
+files <- sprintf("../met_eireann_daily_data/daily_rainfall_%d.csv", years)
+rain  <- do.call(rbind, lapply(files, read.csv))
+
+stations   <- read.csv("../met_eireann_daily_data/station_geodata.csv")
+
+# Attach coordinates to each daily observation
+missing_geo <- setdiff(unique(rain$stno), stations$stno)
+if (length(missing_geo)) warning("No geodata for stno: ", paste(missing_geo, collapse=", "))
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Compute total number of days
+total_days <- length(unique(rain$t))
+# Adds a completeness column = observed days / total days.
+obs_per_station$completeness <- obs_per_station$n_obs / total_days
+
+# Apply the % cutoff
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Setup output file names
+tag          <- sprintf("Implementations_Sweep_with_betas")
+results_file <- sprintf("section_4_2_implementations_sweep_betas_%s.rds", tag)
+log_file     <- sprintf("section_4_2_implementations_sweep_betas_%s.txt", tag)
+
+
+# Then mask a fraction of the currently-observed cells
+set.seed(541)
+observed_idx <- which(!is.na(rain$y))
+masked_idx   <- sort(sample(observed_idx, length(observed_idx) * 0.25))
+
+df_miss <- rain
+df_miss$y[masked_idx] <- NA           # hide masked
+```
+
+## Imputation
+```{r run-naive, message=FALSE, results='hide'}
+# Run naive C implementation
+naive_time <- system.time({
+  naive_imp <- ENCE_C_naive(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = masked_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
+})["elapsed"]
+```
+
+```{r run-warmstart, message=FALSE, results='hide'}
+# Run warmstart C implementation
+warmstart_time <- system.time({
+  warmstart_imp <- ENCE_C_warmstart(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = masked_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
+})["elapsed"]
+```
+
+```{r run-active, message=FALSE, results='hide'}
+active_time <- system.time({
+  active_imp <- ENCE_C_active(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = masked_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
+})["elapsed"]
+```
+
+## Results
+
+​```{r results, message=FALSE}
+naive_y     <- naive_imp$y[masked_idx]
+warmstart_y <- warmstart_imp$y[masked_idx]
+active_y    <- active_imp$y[masked_idx]
+true_y      <- rain$y[masked_idx]
+
+report_metrics <- function(true, pred, method_name, elapsed) {
+  rmse <- sqrt(mean((pred - true)^2))
+  cat(method_name, "\n", sep = "")
+  cat("Time:  ", round(elapsed, 2), "seconds\n")
+  cat("RMSE:  ", rmse, "\n")
+  cat("Bias %:", sum(pred - true) / sum(true) * 100, "\n")
+  cat("R2:    ", 1 - sum((pred - true)^2) / sum((true - mean(true))^2), "\n\n")
+}
+
+log_lines <- capture.output({
+  report_metrics(true_y, naive_y, "Naive", naive_time)
+  report_metrics(true_y, warmstart_y, "Warmstart", warmstart_time)
+  report_metrics(true_y, active_y, "Active", active_time)
+})
+writeLines(log_lines, log_file)
+cat(log_lines, sep = "\n")
+​```
+
+## Save Results
+
+​```{r save_results}
+results <- list(
+  meta = list(
+    description = "C implementation beta diagnostic (single 25% mask split): naive vs warmstart vs active-set",
+    cutoff      = cutoff,
+    mask_frac   = 0.25,
+    mask_seed   = 541,
+    years       = years,
+    n_stations  = length(keep),
+    n_observed  = length(observed_idx),
+    n_masked    = length(masked_idx),
+    run_time    = Sys.time()
+  ),
+
+  naive_time = naive_time,
+  warmstart_time = warmstart_time,
+  active_time = active_time,
+
+  true_y = true_y,
+  naive_y = naive_y,
+  warmstart_y = warmstart_y,
+  active_y = active_y,
+
+  naive_rmse_history     = attr(naive_imp, "rmse_history"),
+  warmstart_rmse_history = attr(warmstart_imp, "rmse_history"),
+  active_rmse_history    = attr(active_imp, "rmse_history"),
+  naive_val_history      = attr(naive_imp, "val_rmse_history"),
+  warmstart_val_history  = attr(warmstart_imp, "val_rmse_history"),
+  active_val_history     = attr(active_imp, "val_rmse_history"),
+
+  naive_ls_history     = attr(naive_imp, "ls_history"),
+  naive_as_history      = attr(naive_imp, "as_history"),
+  warmstart_ls_history  = attr(warmstart_imp, "ls_history"),
+  warmstart_as_history  = attr(warmstart_imp, "as_history"),
+  active_ls_history     = attr(active_imp, "ls_history"),
+  active_as_history     = attr(active_imp, "as_history"),
+
+  stno = rain$stno[masked_idx],
+  t    = rain$t[masked_idx]
+)
+
+saveRDS(results, results_file)
+
+# Beta trajectories, one CSV per implementation, tagged with cutoff so reruns don't clobber each other
+write.csv(attr(naive_imp, "beta_history"),     sprintf("betas_naive_history_cutoff%d.csv", cutoff*100),     row.names = FALSE)
+write.csv(attr(warmstart_imp, "beta_history"), sprintf("betas_warmstart_history_cutoff%d.csv", cutoff*100), row.names = FALSE)
+write.csv(attr(active_imp, "beta_history"),    sprintf("betas_active_history_cutoff%d.csv", cutoff*100),    row.names = FALSE)
+
+cat("Saved results to", results_file, "\n")
+​```

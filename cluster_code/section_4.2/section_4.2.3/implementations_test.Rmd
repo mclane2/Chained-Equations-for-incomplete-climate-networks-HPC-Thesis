@@ -1,0 +1,348 @@
+
+# Filename: implementations_test.Rmd
+# Author: Marc Lane
+
+# ENCE - Implementations Test
+
+Run this .Rmd to reproduce the results from the first part of Section 4.2 of my thesis
+
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo), apply the station completeness cutoff percentage
+
+```{r setup, message=FALSE}
+
+cutoff <- 0.50 # Set completeness cutoff percentage
+
+source("scripts/idw.R")
+source("scripts/ENCE_C_naive.R")
+source("scripts/naive_elastic_net_C_implementation/elastic_net_R_glue.R")
+source("scripts/ENCE_C_warmstart.R")
+source("scripts/warmstart_elastic_net_C_implementation/elastic_net_R_glue.R")
+source("scripts/ENCE_C_active.R")
+source("scripts/active_elastic_net_C_implementation/elastic_net_R_glue.R")
+
+lambda_options <- c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01)
+alpha_options  <- c(0.1, 0.35, 0.65, 0.9)
+
+
+
+# Load Met Eireann daily data and station geodata file
+years <- 2016
+files <- sprintf("../met_eireann_daily_data/daily_rainfall_%d.csv", years)
+rain  <- do.call(rbind, lapply(files, read.csv))
+
+stations   <- read.csv("../met_eireann_daily_data/station_geodata.csv")
+
+# Attach coordinates to each daily observation
+missing_geo <- setdiff(unique(rain$stno), stations$stno)
+if (length(missing_geo)) warning("No geodata for stno: ", paste(missing_geo, collapse=", "))
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Compute total number of days
+total_days <- length(unique(rain$t))
+# Adds a completeness column = observed days / total days.
+obs_per_station$completeness <- obs_per_station$n_obs / total_days
+
+# Apply the % cutoff
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Setup output file names
+tag          <- sprintf("Implementations_Sweep")
+results_file <- sprintf("section_4_2_implementations_sweep_%s.rds", tag)
+log_file     <- sprintf("section_4_2_implementations_sweep_%s.txt", tag)
+```
+
+# Imputation
+ 
+Split data into 10 folds, mask observed entries and impute for each fold separately
+```{r run, message=FALSE, results='hide'}
+# Split the observed cells into K-folds
+set.seed(916)
+K <- 10
+# Indexes of observed cells
+observed_idx <- which(!is.na(rain$y))
+# Shuffled repeating pattern 1,2,...,K as long as the number of observed cells
+fold_id      <- sample(rep(1:K, length.out = length(observed_idx)))
+# Groups observed_idx into its fold
+folds        <- split(observed_idx, fold_id)
+
+# Initialising variables
+naive_pred <- rep(NA_real_, nrow(rain))
+warmstart_pred   <- rep(NA_real_, nrow(rain))
+active_pred   <- rep(NA_real_, nrow(rain))
+naive_time <- 0
+warmstart_time   <- 0
+active_time   <- 0
+naive_rmse_list <- vector("list", K)
+naive_val_list  <- vector("list", K)
+warmstart_rmse_list <- vector("list", K)
+warmstart_val_list  <- vector("list", K)
+active_rmse_list <- vector("list", K)
+active_val_list  <- vector("list", K)
+lambda_match <- 0L
+lambda_valid <- 0L
+alpha_match  <- 0L
+alpha_valid  <- 0L
+naive_lambda_final <- vector("list", K)
+warmstart_lambda_final   <- vector("list", K)
+active_lambda_final   <- vector("list", K)
+naive_alpha_final  <- vector("list", K)
+warmstart_alpha_final    <- vector("list", K)
+active_alpha_final  <- vector("list", K)
+naive_time_vec     <- numeric(K)
+warmstart_time_vec <- numeric(K)
+active_time_vec    <- numeric(K)
+
+# Loop through each fold
+for (k in seq_len(K)) {
+  cat("Fold", k, "of", K, "\n")
+  
+  test_idx <- folds[[k]]
+  
+  # Hide the masked data for this fold
+  df_miss <- rain
+  df_miss$y[test_idx] <- NA
+  
+  # Run naive C implementation 
+  naive_time_vec[k] <- system.time({
+    naive_imp <- ENCE_C_naive(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = test_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
+  })["elapsed"]
+  naive_time <- naive_time + naive_time_vec[k]
+
+  # Run warmstart C implementation
+  warmstart_time_vec[k] <- system.time({
+    warmstart_imp <- ENCE_C_warmstart(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = test_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
+  })["elapsed"]
+  warmstart_time <- warmstart_time + warmstart_time_vec[k]
+
+  # Run active set recycling C implementation
+  active_time_vec[k] <- system.time({
+    active_imp <- ENCE_C_active(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = test_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
+  })["elapsed"]
+  active_time <- active_time + active_time_vec[k]
+
+  # Fill in imputed values for this fold
+  naive_pred[test_idx] <- naive_imp$y[test_idx]
+  warmstart_pred[test_idx] <- warmstart_imp$y[test_idx]
+  active_pred[test_idx] <- active_imp$y[test_idx]
+
+  # Record RMSE lists for this fold
+  naive_rmse_list[[k]] <- attr(naive_imp, "rmse_history")
+  warmstart_rmse_list[[k]]   <- attr(warmstart_imp,   "rmse_history")
+  active_rmse_list[[k]]   <- attr(active_imp,   "rmse_history")
+  naive_val_list[[k]]  <- attr(naive_imp, "val_rmse_history")
+  warmstart_val_list[[k]]    <- attr(warmstart_imp,   "val_rmse_history")
+  active_val_list[[k]]    <- attr(active_imp,   "val_rmse_history")
+
+  # Record hyperparameter values for this fold
+  naive_ls <- attr(naive_imp, "ls_history")
+  naive_as <- attr(naive_imp, "as_history")
+  warmstart_ls   <- attr(warmstart_imp,   "ls_history")
+  warmstart_as   <- attr(warmstart_imp,   "as_history")
+  active_ls   <- attr(active_imp,   "ls_history")
+  active_as   <- attr(active_imp,   "as_history")
+  naive_l <- naive_ls[[2]]
+  naive_a <- naive_as[[2]]
+  warmstart_l   <- warmstart_ls[[2]]
+  warmstart_a   <- warmstart_as[[2]]
+  active_l   <- active_ls[[2]]
+  active_a   <- active_as[[2]]
+  naive_lambda_final[[k]] <- naive_ls[[length(naive_ls)]]
+  naive_alpha_final[[k]]  <- naive_as[[length(naive_as)]]
+  warmstart_lambda_final[[k]]   <- warmstart_ls[[length(warmstart_ls)]]
+  warmstart_alpha_final[[k]]    <- warmstart_as[[length(warmstart_as)]]
+  active_lambda_final[[k]]   <- active_ls[[length(active_ls)]]
+  active_alpha_final[[k]]    <- active_as[[length(active_as)]]
+
+  # Sum the number of matching hyperparameters and keep track
+  vl <- !is.na(naive_l) & !is.na(warmstart_l)
+  lambda_match <- lambda_match + sum(naive_l[vl] == warmstart_l[vl])
+  lambda_valid <- lambda_valid + sum(vl)
+  va <- !is.na(naive_a) & !is.na(warmstart_a)
+  alpha_match  <- alpha_match  + sum(naive_a[va] == warmstart_a[va])
+  alpha_valid  <- alpha_valid  + sum(va)
+
+  cat("Cumulative  naive:", round(naive_time, 1), "s   Warmstart:", round(warmstart_time, 1), "s   Active set:", round(active_time, 1) ,"\n")
+}
+
+true_y   <- rain$y[observed_idx]
+naive_y <- naive_pred[observed_idx]
+warmstart_y   <- warmstart_pred[observed_idx]
+active_y   <- active_pred[observed_idx]
+
+# Check every held-out cell got a prediction
+stopifnot(!anyNA(naive_y), !anyNA(warmstart_y), !anyNA(active_y))
+
+# Pad folds with shorter RMSE history with NA's, bind into a matrix 
+pad <- function(lst) sapply(lst, function(v) c(v, rep(NA, max(lengths(lst)) - length(v))))
+# Calculates the mean of the RMSE lists across folds
+naive_rmse <- rowMeans(pad(naive_rmse_list), na.rm = TRUE)
+warmstart_rmse   <- rowMeans(pad(warmstart_rmse_list),   na.rm = TRUE)
+active_rmse   <- rowMeans(pad(active_rmse_list),   na.rm = TRUE)
+naive_val  <- rowMeans(pad(naive_val_list),  na.rm = TRUE)
+warmstart_val    <- rowMeans(pad(warmstart_val_list),    na.rm = TRUE)
+active_val    <- rowMeans(pad(active_val_list),    na.rm = TRUE)
+
+```
+
+## Helper Functions
+```{r helper functions, message=FALSE}
+report_metrics <- function(true, pred, method_name, elapsed) {
+  rmse <- sqrt(mean((pred - true)^2))
+  cat(method_name, "\n", sep = "")
+  cat("Time:  ", round(elapsed, 2), "seconds\n")
+  cat("RMSE:  ", rmse, "\n")
+  cat("Bias %:", sum(pred - true) / sum(true) * 100, "\n")
+  cat("R2:    ", 1 - sum((pred - true)^2) / sum((true - mean(true))^2), "\n")
+  cat("SRMSE: ", rmse / mean(true), "\n\n")
+}
+```
+
+# Save Results
+
+```{r save_results}
+results <- list(
+  # Run metadata, so this file identifies itself with no guessing
+  meta = list(
+    description = "C Implementation: Naive vs R parallel vs C, Section 4.2",
+    cutoff      = cutoff,
+    K           = K,
+    seed        = 916,
+    years       = years,
+    n_stations  = length(keep),
+    n_observed  = length(observed_idx),
+    run_time    = Sys.time()
+  ),
+
+  # Timing in seconds summed over all K folds
+  naive_time = naive_time,
+  warmstart_time   = warmstart_time,
+  active_time   = active_time,
+  naive_time_vec = naive_time_vec,
+  warmstart_time_vec   = warmstart_time_vec,
+  active_time_vec   = active_time_vec,
+
+
+  # Held-out predictions for observed-vs-predicted scatterplots
+  true_y   = true_y,
+  naive_y = naive_y,
+  warmstart_y   = warmstart_y,
+  active_y   = active_y,
+
+  # Internal convergence RMSE (between cycles) averaged across folds per cycle
+  naive_rmse = naive_rmse,
+  warmstart_rmse  = warmstart_rmse,
+  active_rmse     = active_rmse,
+
+  # Validation RMSE on masked cells averaged across folds per cycle
+  naive_val = naive_val,
+  warmstart_val  = warmstart_val,
+  active_val     = active_val,
+
+  # Raw per-fold histories (length-K lists)
+  naive_rmse_list = naive_rmse_list,
+  warmstart_rmse_list   = warmstart_rmse_list,
+  active_rmse_list   = active_rmse_list,
+  naive_val_list  = naive_val_list,
+  warmstart_val_list    = warmstart_val_list,
+  active_val_list    = active_val_list,
+
+  # Hyperparameter agreement, pooled over folds
+  lambda_match = lambda_match,
+  lambda_valid = lambda_valid,
+  alpha_match  = alpha_match,
+  alpha_valid  = alpha_valid,
+
+  naive_lambda_final = naive_lambda_final,
+  warmstart_lambda_final   = warmstart_lambda_final,
+  active_lambda_final   = active_lambda_final,
+  naive_alpha_final  = naive_alpha_final,
+  warmstart_alpha_final    = warmstart_alpha_final,
+  active_alpha_final    = active_alpha_final,
+
+  # Station Identifiers
+  stno  = rain$stno[observed_idx],
+  t     = rain$t[observed_idx],
+  east  = rain$east[observed_idx],
+  north = rain$north[observed_idx],
+  fold  = fold_id
+)
+
+saveRDS(results, results_file)
+cat("Saved results to", results_file, "\n")
+```
+
+# Save printed log
+
+```{r save_log}
+log_lines <- capture.output({
+  report_metrics(true_y, naive_y, "Naive", naive_time)
+  report_metrics(true_y, warmstart_y, "Warmstart", warmstart_time)
+  report_metrics(true_y, active_y, "Active", active_time)
+
+  cat("\nFinal lambda chosen (naive), pooled over", K, "folds\n")
+  print(table(factor(unlist(naive_lambda_final), levels = sort(lambda_options))))
+  cat("\nFinal lambda chosen (warmstart), pooled over", K, "folds\n")
+  print(table(factor(unlist(warmstart_lambda_final), levels = sort(lambda_options))))
+  cat("\nFinal lambda chosen (active), pooled over", K, "folds\n")
+  print(table(factor(unlist(active_lambda_final), levels = sort(lambda_options))))
+  cat("\nFinal alpha chosen (naive), pooled over", K, "folds\n")
+  print(table(factor(unlist(naive_alpha_final), levels = sort(alpha_options))))
+  cat("\nFinal alpha chosen (warmstart), pooled over", K, "folds\n")
+  print(table(factor(unlist(warmstart_alpha_final), levels = sort(alpha_options))))
+  cat("\nFinal alpha chosen (active), pooled over", K, "folds\n")
+  print(table(factor(unlist(active_alpha_final), levels = sort(alpha_options))))
+
+  cat("Lambda agreement, pooled over", K, "folds\n")
+  cat("  ", lambda_match, "/", lambda_valid, "\n")
+  cat("  ", round(100 * lambda_match / lambda_valid, 1), "%\n")
+  cat("Alpha agreement, pooled over", K, "folds\n")
+  cat("  ", alpha_match, "/", alpha_valid, "\n")
+  cat("  ", round(100 * alpha_match / alpha_valid, 1), "%\n")
+})
+
+writeLines(log_lines, log_file)
+cat(log_lines, sep = "\n")
+cat("\nSaved log to", log_file, "\n")
+```

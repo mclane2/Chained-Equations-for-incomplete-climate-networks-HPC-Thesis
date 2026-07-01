@@ -4,19 +4,35 @@
 # and exposes R functions that wrap the underlying C implementation via .Call.
 #
 # Author: M. Lane
-# Version: 5.0
-# Date: 2026-06-19
+# Version: 3.0
+# Date: 2026-06-07
 
-dyn.load("scripts/active_elastic_net_C_implementation/active_ENCE_impute.so")
+dyn.load("scripts_with_betas/warmstart_elastic_net_C_implementation/warmstart_ENCE_impute.so")
+
+# Build the n x p CV fold matrix, reproducing the per-column seed/sample logic.
+# Observed rows carry their fold id
+make_folds <- function(missing_idx, nfolds = 10L, seed = 323) {
+  folds <- matrix(0L, nrow(missing_idx), ncol(missing_idx))
+  for (col in 1:ncol(missing_idx)) {
+
+    obs   <- !missing_idx[, col]
+    n_obs <- sum(obs)
+
+    if (n_obs > 0) {
+      set.seed(seed)
+      folds[obs, col] <- sample(rep(1:nfolds, length.out = n_obs))
+    }
+  }
+  folds
+}
 
 # One synchronous imputation cycle, parallel across stations in C.
 # Returns list(df, lambda, alpha).
-active_ence_impute_cycle <- function(df_old, missing_idx, folds, lambda_io, alpha_io, 
+warmstart_ence_impute_cycle <- function(df_old, missing_idx, folds, lambda_io, alpha_io, 
                               lambdas = c(0.2, 0.15, 0.10, 0.05),
                               alphas  = c(0.1, 0.35, 0.65, 0.9),
                               nfolds  = 10L, thresh = 1e-7, maxit = 100000L,
                               nthreads = 0L) {
-
   df_mat <- as.matrix(df_old)
   miss   <- as.matrix(missing_idx)
   fld    <- as.matrix(folds)
@@ -27,8 +43,8 @@ active_ence_impute_cycle <- function(df_old, missing_idx, folds, lambda_io, alph
   lam <- as.double(lambda_io); lam[is.na(lam)] <- -1.0
   alp <- as.double(alpha_io);  alp[is.na(alp)] <- -1.0
 
-  .Call("active_ence_impute_cycle_R", df_mat, miss, fld,
+  .Call("warmstart_ence_impute_cycle_R", df_mat, miss, fld,
         as.double(lambdas), as.double(alphas),
         as.integer(nfolds), as.double(thresh), as.integer(maxit),
-        as.integer(nthreads), lam, alp, PACKAGE = "active_ENCE_impute")
+        as.integer(nthreads), lam, alp, PACKAGE = "warmstart_ENCE_impute")
 }

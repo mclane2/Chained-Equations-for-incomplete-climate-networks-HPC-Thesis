@@ -4,9 +4,7 @@
 
 # ENCE and MICE - Synchronous vs Serial Plots
 
-Reads the .rds outputs from cluster runs synchronous_vs_serial.Rmd
-and synchronous_vs_serial_mice.Rmd, and reproduces the Section 4.1 prints and
-plots
+Reads data files from synchronous_vs_serial.Rmd and synchronous_vs_serial_mice.Rmd
 
 ## Setup
 
@@ -58,6 +56,11 @@ cat("cutoff:", meta$cutoff, " K:", meta$K, " seed:", meta$seed,
     " stations:", meta$n_stations, " observed:", meta$n_observed,
     " n_years:", length(meta$years),
     " years:", paste(meta$years, collapse = ", "), "\n\n")
+cat("description:", meta$description, "\n")
+cat("run_time:   ", format(meta$run_time), "\n")
+cat("hostname:   ", meta$hostname, " job:", meta$slurm_job_id,
+    " nodelist:", meta$slurm_nodelist, "\n")
+cat("R version:  ", meta$r_version, "\n\n")
 
 true_y      <- ence$true_y
 serial_y    <- ence$serial_y
@@ -71,7 +74,6 @@ sync_val_list   <- ence$sync_val_list
 
 # Truncate val rmse to the shortest-converging fold so every plotted cycle is a full K-fold average
 n_cut <- min(sapply(serial_val_list, length), sapply(sync_val_list, length))
-cat("Truncating validation RMSE curves to", n_cut, "cycles (shortest converging fold)\n")
 serial_val <- rowMeans(sapply(serial_val_list, function(v) v[1:n_cut]))
 sync_val   <- rowMeans(sapply(sync_val_list,   function(v) v[1:n_cut]))
 ```
@@ -80,12 +82,24 @@ sync_val   <- rowMeans(sapply(sync_val_list,   function(v) v[1:n_cut]))
 report_metrics(true_y, serial_y, "Serial", serial_time)
 report_metrics(true_y, sync_y, "Synchronous", sync_time)
 
-#cat("Lambda agreement, pooled over", meta$K, "folds\n")
-#cat("  ", ence$lambda_match, "/", ence$lambda_valid, "\n")
-#cat("  ", round(100 * ence$lambda_match / ence$lambda_valid, 1), "%\n")
-#cat("Alpha agreement, pooled over", meta$K, "folds\n")
-#cat("  ", ence$alpha_match, "/", ence$alpha_valid, "\n")
-#cat("  ", round(100 * ence$alpha_match / ence$alpha_valid, 1), "%\n")
+cat("Lambda agreement, pooled over", meta$K, "folds\n")
+cat("  ", ence$lambda_match, "/", ence$lambda_valid, "\n")
+cat("  ", round(100 * ence$lambda_match / ence$lambda_valid, 1), "%\n")
+cat("Alpha agreement, pooled over", meta$K, "folds\n")
+cat("  ", ence$alpha_match, "/", ence$alpha_valid, "\n")
+cat("  ", round(100 * ence$alpha_match / ence$alpha_valid, 1), "%\n")
+```
+
+```{r ence_timings, results='hold'}
+serial_time_vec <- ence$serial_time_vec
+sync_time_vec   <- ence$sync_time_vec
+
+cat("Per-fold wall time (s):\n")
+print(rbind(serial = round(serial_time_vec, 2), sync = round(sync_time_vec, 2)))
+
+fold_speedup <- serial_time_vec / sync_time_vec
+cat("\nPer-fold speedup (serial/sync):", round(fold_speedup, 2), "\n")
+cat("mean:", round(mean(fold_speedup), 2), " sd:", round(sd(fold_speedup), 2), "\n\n")
 ```
 
 ```{r ence_scatterplots, results='hold'}
@@ -140,6 +154,11 @@ cat("cutoff:", meta$cutoff, " K:", meta$K, " seed:", meta$seed,
     " stations:", meta$n_stations, " observed:", meta$n_observed,
     " n_years:", length(meta$years),
     " years:", paste(meta$years, collapse = ", "), "\n\n")
+cat("description:", meta$description, "\n")
+cat("run_time:   ", format(meta$run_time), "\n")
+cat("hostname:   ", meta$hostname, " job:", meta$slurm_job_id,
+    " nodelist:", meta$slurm_nodelist, "\n")
+cat("R version:  ", meta$r_version, "\n\n")
 
 true_y      <- mice$true_y
 serial_y    <- mice$serial_y
@@ -153,8 +172,27 @@ report_metrics(true_y, serial_y, "Serial", serial_time)
 report_metrics(true_y, sync_y, "Synchronous", sync_time)
 ```
 
+```{r mice_timings, results='hold'}
+serial_time_vec <- mice$serial_time_vec
+sync_time_vec   <- mice$sync_time_vec
+
+cat("Per-fold wall time (s):\n")
+print(rbind(serial = round(serial_time_vec, 2), sync = round(sync_time_vec, 2)))
+
+fold_speedup <- serial_time_vec / sync_time_vec
+cat("\nPer-fold speedup (serial/sync):", round(fold_speedup, 2), "\n")
+cat("mean:", round(mean(fold_speedup), 2), " sd:", round(sd(fold_speedup), 2), "\n\n")
+```
+
 ```{r mice_scatterplots, results='hold'}
 # Plot observed vs predicted scatterplots
 plot_obs_pred(true_y, serial_y, "Serial")
 plot_obs_pred(true_y, sync_y, "Synchronous")
+```
+
+```{r mice_histories, results='hold'}
+cat("MICE rmse_histories: ", length(mice$serial_rmse_list), "folds x",
+    length(mice$serial_rmse_list[[1]]), "imputations (m)\n\n")
+cat("Fold 1, serial:\n"); print(mice$serial_rmse_list[[1]])
+cat("\nFold 1, sync:\n");   print(mice$sync_rmse_list[[1]])
 ```

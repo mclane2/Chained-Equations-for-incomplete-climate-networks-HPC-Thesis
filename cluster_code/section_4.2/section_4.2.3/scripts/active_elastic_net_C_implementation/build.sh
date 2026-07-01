@@ -21,7 +21,7 @@ set -euo pipefail
 rm -f *.o *.so
 
 # Compile + link with OpenMP.
-PKG_CFLAGS="-fopenmp -O3 -march=native -funroll-loops -flto -Wall -Wextra -DWRITE_BETAS" \
+PKG_CFLAGS="-fopenmp -O3 -march=native -funroll-loops -flto -Wall -Wextra" \
 PKG_LIBS="-fopenmp -flto" \
 R CMD SHLIB elastic_net_functions.c elastic_net.c ENCE_impute.c elastic_net_R_wrapper.c \
   -o active_ENCE_impute.so

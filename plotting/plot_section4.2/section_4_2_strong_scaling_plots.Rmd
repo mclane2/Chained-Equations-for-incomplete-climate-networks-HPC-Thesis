@@ -1,0 +1,208 @@
+# Filename: section_4_2_strong_scaling_plots.Rmd
+# Author: Marc Lane
+
+# ENCE and MICE - C Implementation Strong Scaling Plots
+
+## Setup
+
+```{r setup, message=FALSE}
+tag <- "C_strong"
+results_file <- sprintf("section_4_2_ENCE_MICE_strong_scaling_%s.rds", tag)
+
+scaling <- readRDS(results_file)
+```
+
+## Helper Functions
+
+```{r helper_functions, message=FALSE}
+report_metrics <- function(true, pred, method_name, elapsed) {
+  rmse <- sqrt(mean((pred - true)^2))
+  cat(method_name, "\n", sep = "")
+  cat("Time:  ", round(elapsed, 2), "seconds\n")
+  cat("RMSE:  ", rmse, "\n")
+  cat("Bias %:", sum(pred - true) / sum(true) * 100, "\n")
+  cat("R2:    ", 1 - sum((pred - true)^2) / sum((true - mean(true))^2), "\n")
+  cat("SRMSE: ", rmse / mean(true), "\n\n")
+}
+
+plot_obs_pred <- function(observed, predicted, method_name = "Method") {
+  op <- par(pty = "s")
+  on.exit(par(op))
+  lims <- range(c(observed, predicted), na.rm = TRUE)
+  plot(observed, predicted,
+       xlim = lims, ylim = lims,
+       xlab = "Observed", ylab = "Predicted",
+       main = paste(method_name, ": Observed vs Predicted"),
+       pch = 16, cex = 0.5, col = rgb(0, 0, 0, 0.12))
+  abline(0, 1, col = "red", lwd = 2, lty = 2)
+  grid()
+}
+```
+
+## Unpack
+
+```{r unpack, results='hold'}
+meta <- scaling$meta
+cat("Section 4.2.2 Strong Scaling\n")
+cat("cutoff:", meta$cutoff, " K:", meta$K, " seed:", meta$seed,
+    " stations:", meta$n_stations, " observed:", meta$n_observed,
+    " n_years:", length(meta$years),
+    " years:", paste(meta$years, collapse = ", "), "\n\n")
+cat("description:", meta$description, "\n")
+cat("run_time:   ", format(meta$run_time), "\n")
+cat("hostname:   ", meta$hostname, " job:", meta$slurm_job_id,
+    " nodelist:", meta$slurm_nodelist, "\n")
+cat("R version:  ", meta$r_version, "\n")
+cat("thread_grid:", meta$thread_grid, "\n\n")
+
+thread_grid <- meta$thread_grid
+true_y    <- scaling$true_y
+ENCE_y    <- scaling$ENCE_y
+MICE_y    <- scaling$MICE_y
+ENCE_time <- scaling$ENCE_time
+MICE_time <- scaling$MICE_time
+ENCE_time_mat <- scaling$ENCE_time_mat
+MICE_time_mat <- scaling$MICE_time_mat
+ENCE_rmse <- scaling$ENCE_rmse
+ENCE_val  <- scaling$ENCE_val
+ENCE_rmse_list <- scaling$ENCE_rmse_list
+ENCE_val_list  <- scaling$ENCE_val_list
+MICE_rmse_list <- scaling$MICE_rmse_list
+ENCE_rmse_by_thread <- scaling$ENCE_rmse_by_thread
+MICE_rmse_by_thread <- scaling$MICE_rmse_by_thread
+```
+
+```{r metrics, results='hold'}
+report_metrics(true_y, ENCE_y, "ENCE (1 thread)", ENCE_time["1"])
+report_metrics(true_y, MICE_y, "MICE (1 thread)", MICE_time["1"])
+```
+
+## Timings
+
+```{r timings, results='hold'}
+cat("Cumulative wall time (s), summed over", meta$K, "folds:\n")
+print(rbind(ENCE = round(ENCE_time, 2), MICE = round(MICE_time, 2)))
+
+cat("\nPer-fold wall time, ENCE (rows = folds, cols = threads):\n")
+print(round(ENCE_time_mat, 2))
+cat("\nPer-fold wall time, MICE (rows = folds, cols = threads):\n")
+print(round(MICE_time_mat, 2))
+
+ENCE_mean <- colMeans(ENCE_time_mat)
+ENCE_sd   <- apply(ENCE_time_mat, 2, sd)
+MICE_mean <- colMeans(MICE_time_mat)
+MICE_sd   <- apply(MICE_time_mat, 2, sd)
+
+cat("\nENCE mean +/- sd per thread count:\n")
+print(rbind(mean = round(ENCE_mean, 2), sd = round(ENCE_sd, 2)))
+cat("\nMICE mean +/- sd per thread count:\n")
+print(rbind(mean = round(MICE_mean, 2), sd = round(MICE_sd, 2)))
+```
+
+```{r speedup, results='hold'}
+ENCE_speedup_mat <- ENCE_time_mat[, 1] / ENCE_time_mat
+MICE_speedup_mat <- MICE_time_mat[, 1] / MICE_time_mat
+
+ENCE_speedup_mean <- colMeans(ENCE_speedup_mat)
+ENCE_speedup_sd   <- apply(ENCE_speedup_mat, 2, sd)
+MICE_speedup_mean <- colMeans(MICE_speedup_mat)
+MICE_speedup_sd   <- apply(MICE_speedup_mat, 2, sd)
+
+cat("ENCE speedup (per-fold, vs 1 thread) mean +/- sd:\n")
+print(rbind(mean = round(ENCE_speedup_mean, 2), sd = round(ENCE_speedup_sd, 2)))
+cat("\nMICE speedup (per-fold, vs 1 thread) mean +/- sd:\n")
+print(rbind(mean = round(MICE_speedup_mean, 2), sd = round(MICE_speedup_sd, 2)))
+
+ENCE_efficiency <- ENCE_speedup_mean / thread_grid
+MICE_efficiency <- MICE_speedup_mean / thread_grid
+cat("\nENCE efficiency (speedup / threads):\n")
+print(round(ENCE_efficiency, 2))
+cat("\nMICE efficiency (speedup / threads):\n")
+print(round(MICE_efficiency, 2))
+```
+
+## Accuracy invariance across thread counts
+
+```{r rmse_by_thread, results='hold'}
+cat("Final RMSE by thread count (should be ~constant; drift indicates thread-count-dependent numerics):\n")
+print(rbind(ENCE = round(ENCE_rmse_by_thread, 6), MICE = round(MICE_rmse_by_thread, 6)))
+```
+
+## Scatterplots
+
+```{r scatterplots, results='hold'}
+plot_obs_pred(true_y, ENCE_y, "ENCE (1 thread)")
+plot_obs_pred(true_y, MICE_y, "MICE (1 thread)")
+```
+
+## Convergence (1 thread run)
+
+```{r ence_convergence_plot, results='hold'}
+col_rmse <- "#234ec2"
+col_val  <- "#c20d0d"
+
+plot(ENCE_rmse, type = "b", col = col_rmse, pch = 15,
+     xlab = "Cycle", ylab = "Internal RMSE (between cycles)",
+     main = "ENCE Convergence (1 thread)")
+grid()
+
+plot(ENCE_val, type = "b", col = col_val, pch = 17,
+     xlab = "Cycle", ylab = "Validation RMSE (masked cells)",
+     main = "ENCE Validation RMSE (1 thread)")
+grid()
+```
+
+```{r mice_histories, results='hold'}
+cat("MICE rmse_histories (1 thread run): ", length(MICE_rmse_list), "folds x",
+    length(MICE_rmse_list[[1]]), "imputations (m)\n\n")
+cat("Fold 1:\n"); print(MICE_rmse_list[[1]])
+```
+
+## Strong Scaling Plots
+
+```{r scaling_time_plot, results='hold'}
+col_ence <- "#eb7500"
+col_mice <- "#7008d1"
+
+plot(thread_grid, ENCE_mean, type = "b", col = col_ence, pch = 15,
+     xlab = "Threads", ylab = "Wall time (s)",
+     main = "Strong Scaling: ENCE")
+arrows(thread_grid, ENCE_mean - ENCE_sd, thread_grid, ENCE_mean + ENCE_sd,
+       angle = 90, code = 3, length = 0.05, col = col_ence)
+grid()
+
+plot(thread_grid, MICE_mean, type = "b", col = col_mice, pch = 17,
+     xlab = "Threads", ylab = "Wall time (s)",
+     main = "Strong Scaling: MICE")
+arrows(thread_grid, MICE_mean - MICE_sd, thread_grid, MICE_mean + MICE_sd,
+       angle = 90, code = 3, length = 0.05, col = col_mice)
+grid()
+```
+
+```{r scaling_speedup_plot, results='hold'}
+plot(thread_grid, ENCE_speedup_mean, type = "b", col = col_ence, pch = 15,
+     xlim = range(thread_grid), ylim = range(thread_grid),
+     xlab = "Threads", ylab = "Speedup (vs 1 thread)",
+     main = "Strong Scaling Speedup: ENCE vs MICE")
+arrows(thread_grid, ENCE_speedup_mean - ENCE_speedup_sd, thread_grid, ENCE_speedup_mean + ENCE_speedup_sd,
+       angle = 90, code = 3, length = 0.05, col = col_ence)
+lines(thread_grid, MICE_speedup_mean, type = "b", col = col_mice, pch = 17)
+arrows(thread_grid, MICE_speedup_mean - MICE_speedup_sd, thread_grid, MICE_speedup_mean + MICE_speedup_sd,
+       angle = 90, code = 3, length = 0.05, col = col_mice)
+abline(0, 1, col = "grey40", lty = 2)
+grid()
+legend("topleft", legend = c("ENCE", "MICE", "Ideal"),
+       col = c(col_ence, col_mice, "grey40"), pch = c(15, 17, NA), lty = c(1, 1, 2))
+```
+
+```{r scaling_efficiency_plot, results='hold'}
+plot(thread_grid, ENCE_efficiency, type = "b", col = col_ence, pch = 15,
+     ylim = c(0, 1.1),
+     xlab = "Threads", ylab = "Parallel efficiency",
+     main = "Strong Scaling Efficiency: ENCE vs MICE")
+lines(thread_grid, MICE_efficiency, type = "b", col = col_mice, pch = 17)
+abline(h = 1, col = "grey40", lty = 2)
+grid()
+legend("bottomleft", legend = c("ENCE", "MICE", "Ideal"),
+       col = c(col_ence, col_mice, "grey40"), pch = c(15, 17, NA), lty = c(1, 1, 2))
+```

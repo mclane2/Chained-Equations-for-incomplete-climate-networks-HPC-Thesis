@@ -37,7 +37,7 @@ int elastic_net_path(const double *Z_in, const double *z_in, int n, int p,
     int *active_idx = malloc((size_t)p * sizeof(int));
 
     /* Allocation error check */
-    if (!Z || !z || !r || !Zm || !Zs || !beta) {
+    if (!Z || !z || !r || !Zm || !Zs || !beta || !is_active || !active_idx) {
         free(Z); free(z); free(r); free(Zm); free(Zs); free(beta); free(is_active); free(active_idx);
         return -1;
     }

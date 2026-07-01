@@ -20,15 +20,17 @@ source("scripts/MICE_synchronous_parallel.R")
 source("scripts/MICE_C.R")
 source("scripts/MICE_elastic_net_C_implementation/elastic_net_R_glue.R")
 
+data_root <- Sys.getenv("MET_EIREANN_DATA", unset = "../../../met_eireann_daily_data")
+
 lambda_options <- c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01)
 alpha_options  <- c(0.1, 0.35, 0.65, 0.9)
 
 # Load Met Eireann daily data and station geodata file
 years <- 2016
-files <- sprintf("../met_eireann_daily_data/daily_rainfall_%d.csv", years)
+files    <- sprintf("%s/daily_rainfall_%d.csv", data_root, years)
 rain  <- do.call(rbind, lapply(files, read.csv))
 
-stations   <- read.csv("../met_eireann_daily_data/station_geodata.csv")
+stations <- read.csv(sprintf("%s/station_geodata.csv", data_root))
 
 # Attach coordinates to each daily observation
 missing_geo <- setdiff(unique(rain$stno), stations$stno)
@@ -68,6 +70,7 @@ Split data into 10 folds, mask observed entries and impute for each fold separat
 ```{r run, message=FALSE, results='hide'}
 # Split the observed cells into K-folds
 set.seed(916)
+m <- 4
 K <- 10
 # Indexes of observed cells
 observed_idx <- which(!is.na(rain$y))
@@ -86,6 +89,20 @@ C_time   <- 0
 serial_rmse_list <- vector("list", K)
 sync_rmse_list <- vector("list", K)
 C_rmse_list <- vector("list", K)
+serial_time_vec     <- numeric(K)
+sync_time_vec <- numeric(K)
+C_time_vec    <- numeric(K)
+lambda_match <- 0L
+lambda_valid <- 0L
+alpha_match  <- 0L
+alpha_valid  <- 0L
+serial_lambda_final <- vector("list", K)
+sync_lambda_final   <- vector("list", K)
+C_lambda_final       <- vector("list", K)
+serial_alpha_final  <- vector("list", K)
+sync_alpha_final     <- vector("list", K)
+C_alpha_final         <- vector("list", K)
+C_beta_history_list  <- vector("list", K)
 
 # Loop through each fold
 for (k in seq_len(K)) {
@@ -98,8 +115,8 @@ for (k in seq_len(K)) {
   df_miss$y[test_idx] <- NA
   
   # Run serial MICE
-    serial_time <- serial_time + system.time({
-    serial_imp <- MICE_DURR_serial(df_miss, response = "y", m = 4,
+    serial_time_vec[k] <- system.time({
+    serial_imp <- MICE_DURR_serial(df_miss, response = "y", m = m,
                        max_impute_cycles = 5, hyp_cycles = 2,
                        init_method = "idw", max_EM_cycles = 8,
                        nclusters = 1, outfile = "/dev/null",
@@ -108,10 +125,11 @@ for (k in seq_len(K)) {
                        transformation = sqrt,
                        reverse_transformation = function(x) x^2)
   })["elapsed"]
+  serial_time <- serial_time + serial_time_vec[k]
 
   # Run synchronous MICE
-  sync_time <- sync_time + system.time({
-    sync_imp <- MICE_DURR_sync_par(df_miss, response = "y", m = 4,
+  sync_time_vec[k] <- system.time({
+    sync_imp <- MICE_DURR_sync_par(df_miss, response = "y", m = m,
                                  max_impute_cycles = 5, hyp_cycles = 2, 
                                  init_method = "idw", max_EM_cycles = 8, 
                                  nclusters = 1, outfile = "/dev/null",
@@ -121,9 +139,10 @@ for (k in seq_len(K)) {
                                  transformation = sqrt,
                                  reverse_transformation = {function(x) x^2})
   })["elapsed"]
+  sync_time <- sync_time + sync_time_vec[k]
 
-  C_time <- C_time + system.time({
-    C_imp <- MICE_DURR_C(df_miss, response = "y", m = 4,
+  C_time_vec[k] <- system.time({
+    C_imp <- MICE_DURR_C(df_miss, response = "y", m = m,
                        max_impute_cycles = 5, hyp_cycles = 2,
                        init_method = "idw", max_EM_cycles = 8,
                        nclusters = 1, nthreads = 16, outfile = NULL,
@@ -132,6 +151,7 @@ for (k in seq_len(K)) {
                        transformation = sqrt,
                        reverse_transformation = function(x) x^2)
   })["elapsed"]
+  C_time <- C_time + C_time_vec[k]
 
 
   # Fill in imputed values for this fold
@@ -143,6 +163,32 @@ for (k in seq_len(K)) {
   serial_rmse_list[[k]] <- attr(serial_imp, "rmse_histories")
   sync_rmse_list[[k]]   <- attr(sync_imp,   "rmse_histories")
   C_rmse_list[[k]]   <- attr(C_imp,   "rmse_histories")
+
+  serial_lambdas_list <- attr(serial_imp, "lambdas_list")
+  serial_alphas_list  <- attr(serial_imp, "alphas_list")
+  sync_lambdas_list   <- attr(sync_imp,   "lambdas_list")
+  sync_alphas_list    <- attr(sync_imp,   "alphas_list")
+  C_lambdas_list      <- attr(C_imp,      "lambdas_list")
+  C_alphas_list       <- attr(C_imp,      "alphas_list")
+
+  serial_lambda_final[[k]] <- unlist(serial_lambdas_list)
+  serial_alpha_final[[k]]  <- unlist(serial_alphas_list)
+  sync_lambda_final[[k]]   <- unlist(sync_lambdas_list)
+  sync_alpha_final[[k]]    <- unlist(sync_alphas_list)
+  C_lambda_final[[k]]      <- unlist(C_lambdas_list)
+  C_alpha_final[[k]]       <- unlist(C_alphas_list)
+
+  C_beta_history_list[[k]] <- attr(C_imp, "beta_history_list")
+
+  # Sum matching hyperparameters, per imputation copy (serial vs sync only)
+  for (mi in seq_along(serial_lambdas_list)) {
+    vl <- !is.na(serial_lambdas_list[[mi]]) & !is.na(sync_lambdas_list[[mi]])
+    lambda_match <- lambda_match + sum(serial_lambdas_list[[mi]][vl] == sync_lambdas_list[[mi]][vl])
+    lambda_valid <- lambda_valid + sum(vl)
+    va <- !is.na(serial_alphas_list[[mi]]) & !is.na(sync_alphas_list[[mi]])
+    alpha_match <- alpha_match + sum(serial_alphas_list[[mi]][va] == sync_alphas_list[[mi]][va])
+    alpha_valid <- alpha_valid + sum(va)
+  }
 
   cat("Cumulative  R serial:", round(serial_time, 1), "s   R sync:", round(sync_time, 1), "s   C:", round(C_time, 1) ,"\n")
 }
@@ -182,13 +228,20 @@ results <- list(
     years       = years,
     n_stations  = length(keep),
     n_observed  = length(observed_idx),
-    run_time    = Sys.time()
+    run_time    = Sys.time(),
+    hostname       = Sys.info()[["nodename"]],
+    slurm_job_id   = Sys.getenv("SLURM_JOB_ID"),
+    slurm_nodelist = Sys.getenv("SLURM_NODELIST"),
+    r_version      = R.version.string
   ),
 
   # Timing in seconds summed over all K folds
   serial_time = serial_time,
   sync_time   = sync_time,
-  C_time   = C_time,
+  C_time   = C_time,#
+  serial_time_vec = serial_time_vec,
+  sync_time_vec   = sync_time_vec,
+  C_time_vec   = C_time_vec,
 
   # Held-out predictions for observed-vs-predicted scatterplots
   true_y   = true_y,
@@ -201,6 +254,20 @@ results <- list(
   serial_rmse_list = serial_rmse_list,
   sync_rmse_list   = sync_rmse_list,
   C_rmse_list   = C_rmse_list,
+
+  lambda_match = lambda_match,
+  lambda_valid = lambda_valid,
+  alpha_match  = alpha_match,
+  alpha_valid  = alpha_valid,
+
+  serial_lambda_final = serial_lambda_final,
+  sync_lambda_final   = sync_lambda_final,
+  C_lambda_final       = C_lambda_final,
+  serial_alpha_final  = serial_alpha_final,
+  sync_alpha_final     = sync_alpha_final,
+  C_alpha_final         = C_alpha_final,
+
+  C_beta_history_list = C_beta_history_list,
 
   # Station Identifiers
   stno  = rain$stno[observed_idx],
@@ -221,6 +288,12 @@ log_lines <- capture.output({
   report_metrics(true_y, serial_y, "Serial", serial_time)
   report_metrics(true_y, sync_y, "Synchronous", sync_time)
   report_metrics(true_y, C_y, "C", C_time)
+  cat("\nLambda agreement, pooled over", K, "folds x", m, "imputations\n")
+  cat("  ", lambda_match, "/", lambda_valid, "\n")
+  cat("  ", round(100 * lambda_match / lambda_valid, 1), "%\n")
+  cat("Alpha agreement, pooled over", K, "folds x", m, "imputations\n")
+  cat("  ", alpha_match, "/", alpha_valid, "\n")
+  cat("  ", round(100 * alpha_match / alpha_valid, 1), "%\n")
 })
 
 writeLines(log_lines, log_file)

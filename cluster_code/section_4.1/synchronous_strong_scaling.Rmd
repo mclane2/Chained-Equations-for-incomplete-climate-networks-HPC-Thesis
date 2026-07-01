@@ -18,12 +18,14 @@ source("scripts/idw.R")
 source("scripts/ENCE_synchronous.R")
 source("scripts/MICE_synchronous_parallel.R")
 
+data_root <- Sys.getenv("MET_EIREANN_DATA", unset = "../../met_eireann_daily_data")
+
 # Load Met Eireann daily data and station geodata file
 years <- 2016:2025
-files <- sprintf("../met_eireann_daily_data/daily_rainfall_%d.csv", years)
+files    <- sprintf("%s/daily_rainfall_%d.csv", data_root, years)
 rain  <- do.call(rbind, lapply(files, read.csv))
 
-stations   <- read.csv("../met_eireann_daily_data/station_geodata.csv")
+stations <- read.csv(sprintf("%s/station_geodata.csv", data_root))
 
 # Attach coordinates to each daily observation
 missing_geo <- setdiff(unique(rain$stno), stations$stno)
@@ -79,6 +81,10 @@ folds        <- split(observed_idx, fold_id)
 # Initialising variables (one entry per core count)
 ENCE_time <- setNames(numeric(length(core_grid)), core_grid)
 MICE_time <- setNames(numeric(length(core_grid)), core_grid)
+ENCE_time_mat <- matrix(NA_real_, nrow = K, ncol = length(core_grid),
+                         dimnames = list(NULL, as.character(core_grid)))
+MICE_time_mat <- matrix(NA_real_, nrow = K, ncol = length(core_grid),
+                         dimnames = list(NULL, as.character(core_grid)))
 ENCE_pred <- rep(NA_real_, nrow(rain))
 MICE_pred <- rep(NA_real_, nrow(rain))
 ENCE_rmse_list <- vector("list", K)
@@ -102,7 +108,8 @@ for (w in core_grid) {
 
 
     # Run synchronous ENCE
-    ENCE_time[as.character(w)] <- ENCE_time[as.character(w)] + system.time({
+# Run synchronous ENCE
+    ENCE_time_mat[k, as.character(w)] <- system.time({
       ENCE_imp <- ENCE_sync(df_miss, response = "y", max_cycles = 30,
                      init_method = "idw",
                      x_name = "east", y_name = "north", t_name = "t",
@@ -114,9 +121,10 @@ for (w in core_grid) {
                      alpha_options  = c(0.1, 0.35, 0.65, 0.9),
                      n_workers = w)
     })["elapsed"]
+    ENCE_time[as.character(w)] <- ENCE_time[as.character(w)] + ENCE_time_mat[k, as.character(w)]
 
     # Run synchronous MICE
-    MICE_time[as.character(w)] <- MICE_time[as.character(w)] + system.time({
+    MICE_time_mat[k, as.character(w)] <- system.time({
       MICE_imp <- MICE_DURR_sync_par(df_miss, response = "y", m = 1,
                                  max_impute_cycles = 5, hyp_cycles = 2, 
                                  init_method = "idw", max_EM_cycles = 8, 
@@ -127,6 +135,7 @@ for (w in core_grid) {
                                  transformation = sqrt,
                                  reverse_transformation = {function(x) x^2})
     })["elapsed"]
+    MICE_time[as.character(w)] <- MICE_time[as.character(w)] + MICE_time_mat[k, as.character(w)]
 
 
 
@@ -178,7 +187,7 @@ report_metrics <- function(true, pred, method_name, elapsed) {
 results <- list(
   # Run metadata, so this file identifies itself with no guessing
   meta = list(
-    description = "ENCE Strong Scaling, Section 4.1",
+    description = "ENCE MICE Strong Scaling, Section 4.1",
     cutoff      = cutoff,
     K           = K,
     seed        = 916,
@@ -186,13 +195,19 @@ results <- list(
     n_stations  = length(keep),
     n_observed  = length(observed_idx),
     run_time    = Sys.time(),
-    core_grid   = core_grid
+    core_grid   = core_grid,
+    hostname       = Sys.info()[["nodename"]],
+    slurm_job_id   = Sys.getenv("SLURM_JOB_ID"),
+    slurm_nodelist = Sys.getenv("SLURM_NODELIST"),
+    r_version      = R.version.string
   ),
 
   # Timing in seconds summed over all K folds
 
-  ENCE_time   = ENCE_time,  
+  ENCE_time   = ENCE_time,
   MICE_time   = MICE_time,
+  ENCE_time_mat = ENCE_time_mat,
+  MICE_time_mat = MICE_time_mat,
 
   # Held-out predictions for observed-vs-predicted scatterplots
   true_y   = true_y,

@@ -7,7 +7,7 @@
 # Version: 2.0
 # Date: 2026-05-29
 
-dyn.load("scripts/naive_elastic_net_C_implementation/naive_ENCE_impute.so")
+dyn.load("scripts_with_betas/naive_elastic_net_C_implementation/naive_ENCE_impute.so")
 
 # Build the n x p CV fold matrix, reproducing the per-column seed/sample logic.
 # Observed rows carry their fold id

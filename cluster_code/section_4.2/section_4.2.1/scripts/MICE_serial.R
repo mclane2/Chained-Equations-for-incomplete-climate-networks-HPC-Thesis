@@ -126,6 +126,8 @@ MICE_DURR_serial <- function(df, response = "y", m = 4,
   colnames(params) <- names(df)
 
   rmse_histories <- lapply(results, `[[`, "rmse_history")
+  lambdas_list <- lapply(results, `[[`, "lambdas")
+  alphas_list  <- lapply(results, `[[`, "alphas")
   
   # Iterator and convergence tracking
   i <- 1; old_rmse <- .Machine$double.xmax; new_rmse <- .Machine$double.xmax
@@ -165,9 +167,11 @@ MICE_DURR_serial <- function(df, response = "y", m = 4,
   # Add times back and undo transformation
   df[time_id] <- original_times
   df[response] <- reverse_transformation(df[response])
-  
+
   df <- as.data.frame(df)
   attr(df, "rmse_histories") <- rmse_histories
+  attr(df, "lambdas_list") <- lambdas_list
+  attr(df, "alphas_list")  <- alphas_list
   return(df)
 }
 
@@ -303,7 +307,7 @@ MICE_get_params_serial <- function(df, missing_idx, max_cycles = 16,
     }
   }
 
-  return(list(params = params, rmse_history = rmse_history))
+  return(list(params = params, rmse_history = rmse_history, lambdas = lambdas, alphas = alphas))
 }
 
 

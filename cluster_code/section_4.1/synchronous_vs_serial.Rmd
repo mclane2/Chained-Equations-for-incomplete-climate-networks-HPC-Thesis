@@ -18,15 +18,17 @@ source("scripts/idw.R")
 source("scripts/ENCE_serial.R")
 source("scripts/ENCE_synchronous.R")
 
+data_root <- Sys.getenv("MET_EIREANN_DATA", unset = "../../met_eireann_daily_data")
+
 lambda_options <- c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01)
 alpha_options  <- c(0.1, 0.35, 0.65, 0.9)
 
 # Load Met Eireann daily data and station geodata file
-years <- 2016
-files <- sprintf("../met_eireann_daily_data/daily_rainfall_%d.csv", years)
+years <- 2016:2025
+files    <- sprintf("%s/daily_rainfall_%d.csv", data_root, years)
 rain  <- do.call(rbind, lapply(files, read.csv))
 
-stations   <- read.csv("../met_eireann_daily_data/station_geodata.csv")
+stations <- read.csv(sprintf("%s/station_geodata.csv", data_root))
 
 # Attach coordinates to each daily observation
 missing_geo <- setdiff(unique(rain$stno), stations$stno)
@@ -91,6 +93,8 @@ serial_lambda_final <- vector("list", K)
 sync_lambda_final   <- vector("list", K)
 serial_alpha_final  <- vector("list", K)
 sync_alpha_final    <- vector("list", K)
+serial_time_vec     <- numeric(K)
+sync_time_vec       <- numeric(K)
 
 # Loop through each fold
 for (k in seq_len(K)) {
@@ -103,7 +107,7 @@ for (k in seq_len(K)) {
   df_miss$y[test_idx] <- NA
   
   # Run serial ENCE 
-  serial_time <- serial_time + system.time({
+  serial_time_vec[k] <- system.time({
     serial_imp <- ENCE_serial(df_miss, response = "y", max_cycles = 30,
                 init_method = "idw",
                 x_name = "east", y_name = "north", t_name = "t",
@@ -115,9 +119,10 @@ for (k in seq_len(K)) {
                 alpha_options  = alpha_options
                 )
   })["elapsed"]
+  serial_time <- serial_time + serial_time_vec[k]
 
   # Run synchronous ENCE
-  sync_time <- sync_time + system.time({
+  sync_time_vec[k] <- system.time({
     sync_imp <- ENCE_sync(df_miss, response = "y", max_cycles = 30,
                      init_method = "idw",
                      x_name = "east", y_name = "north", t_name = "t",
@@ -129,6 +134,7 @@ for (k in seq_len(K)) {
                      alpha_options  = alpha_options,
                      n_workers = 16)
   })["elapsed"]
+  sync_time <- sync_time + sync_time_vec[k]
 
   # Fill in imputed values for this fold
   serial_pred[test_idx] <- serial_imp$y[test_idx]
@@ -208,12 +214,18 @@ results <- list(
     years       = years,
     n_stations  = length(keep),
     n_observed  = length(observed_idx),
-    run_time    = Sys.time()
+    run_time    = Sys.time(),
+    hostname       = Sys.info()[["nodename"]],
+    slurm_job_id   = Sys.getenv("SLURM_JOB_ID"),
+    slurm_nodelist = Sys.getenv("SLURM_NODELIST"),
+    r_version      = R.version.string
   ),
 
   # Timing in seconds summed over all K folds
   serial_time = serial_time,
   sync_time   = sync_time,
+  serial_time_vec = serial_time_vec,
+  sync_time_vec   = sync_time_vec,
 
   # Held-out predictions for observed-vs-predicted scatterplots
   true_y   = true_y,

@@ -178,7 +178,12 @@ static int column_impute(const double *df_old, double *target_out, int n, int p,
             for (int v = 0; v < n_val;   ++v) yv[v] = y_obs[val_id[v]];
 
             for (int a = 0; a < n_alpha; ++a) {
-                elastic_net_path(xt, yt, n_train, p_cov, lambdas, n_lambda, alphas[a], thresh, maxit, beta_path, int_path);
+                if (elastic_net_path(xt, yt, n_train, p_cov, lambdas, n_lambda, alphas[a], thresh, maxit, beta_path, int_path) < 0) {
+                    free(cvm); free(fold_obs); free(train_id); free(val_id); free(xt); free(xv); free(yt); free(yv);
+                    free(miss_rows); free(x_obs); free(x_miss); free(y_obs); free(beta);
+                    free(beta_path); free(int_path);
+                    return 1;
+                }
 
                 for (int l = 0; l < n_lambda; ++l) {
                     const double *b = beta_path + (size_t)l * p_cov;
@@ -206,7 +211,10 @@ static int column_impute(const double *df_old, double *target_out, int n, int p,
 
     /* Final fit on all observed data */
     double intercept;
-    elastic_net_path(x_obs, y_obs, n_obs, p_cov, &lambda, 1, alpha, thresh, maxit, beta, &intercept);
+    if (elastic_net_path(x_obs, y_obs, n_obs, p_cov, &lambda, 1, alpha, thresh, maxit, beta, &intercept) < 0) {
+        free(miss_rows); free(x_obs); free(x_miss); free(y_obs); free(beta);
+        return 1;
+    }
 
     /* We need the regression error for sampling */
     double s2hat = predict_mse(x_obs, n_obs, p_cov, beta, intercept, y_obs);

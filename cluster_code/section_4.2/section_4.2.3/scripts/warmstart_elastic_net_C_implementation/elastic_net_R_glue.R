@@ -7,7 +7,7 @@
 # Version: 3.0
 # Date: 2026-06-07
 
-dyn.load("warmstart_elastic_net_C_implementation/warmstart_ENCE_impute.so")
+dyn.load("scripts/warmstart_elastic_net_C_implementation/warmstart_ENCE_impute.so")
 
 # Build the n x p CV fold matrix, reproducing the per-column seed/sample logic.
 # Observed rows carry their fold id

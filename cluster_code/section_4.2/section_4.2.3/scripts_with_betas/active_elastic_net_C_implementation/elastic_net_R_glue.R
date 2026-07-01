@@ -7,7 +7,7 @@
 # Version: 5.0
 # Date: 2026-06-19
 
-dyn.load("scripts/active_elastic_net_C_implementation/active_ENCE_impute.so")
+dyn.load("scripts_with_betas/active_elastic_net_C_implementation/active_ENCE_impute.so")
 
 # One synchronous imputation cycle, parallel across stations in C.
 # Returns list(df, lambda, alpha).
