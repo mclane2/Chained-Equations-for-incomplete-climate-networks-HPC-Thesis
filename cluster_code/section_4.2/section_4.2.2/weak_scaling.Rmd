@@ -1,8 +1,8 @@
 
-# Filename: strong_scaling.Rmd
+# Filename: weak_scaling.Rmd
 # Author: Marc Lane
 
-# ENCE and MICE - C Implementation Strong Scaling
+# ENCE and MICE - C Implementation Weak Scaling
 
 Run this .Rmd to reproduce the results from Section 4.2.2 of my thesis
 
@@ -53,30 +53,29 @@ obs_per_station$completeness <- obs_per_station$n_obs / total_days
 keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
 rain   <- rain[rain$stno %in% keep, ]
 
+# Repeat over these number of threads
+thread_grid <- c(1, 2, 4, 6, 8, 10, 12, 14, 16)
+K <- 10
+
+# Calculate the number of stations per thread for weak scaling
+n_avail <- length(keep)
+stations_per_thread <- floor(n_avail / max(thread_grid))
+stopifnot(stations_per_thread >= 1)
+
+set.seed(916)
+station_order <- sample(keep)
+
 # Setup output file names
-tag          <- sprintf("C_strong")
-results_file <- sprintf("section_4_2_ENCE_MICE_strong_scaling_%s.rds", tag)
-log_file     <- sprintf("section_4_2_ENCE_MICE_strong_scaling_%s.txt", tag)
+tag          <- sprintf("C_weak")
+results_file <- sprintf("section_4_2_ENCE_MICE_weak_scaling_%s.rds", tag)
+log_file     <- sprintf("section_4_2_ENCE_MICE_weak_scaling_%s.txt", tag)
 ```
 
 # Imputation
 
 Split data into 10 folds, mask observed entries and impute for each fold separately
-Repeat for different number of threads (strong scaling)
+Repeat for different number of stations scaled proportionally with the number of threads (weak scaling)
 ```{r run, message=FALSE, results='hide'}
-
-# Repeat over these number of threads
-thread_grid <- c(1, 2, 4, 6, 8, 10, 12, 14, 16)
-
-# Split the observed cells into K-folds
-set.seed(916)
-K <- 10
-# Indexes of observed cells
-observed_idx <- which(!is.na(rain$y))
-# Shuffled repeating pattern 1,2,...,K as long as the number of observed cells
-fold_id      <- sample(rep(1:K, length.out = length(observed_idx)))
-# Groups observed_idx into its fold
-folds        <- split(observed_idx, fold_id)
 
 # Initialising variables (one entry per thread count)
 ENCE_time <- setNames(numeric(length(thread_grid)), thread_grid)
@@ -94,8 +93,31 @@ for (n_threads in thread_grid) {
   cat("=== n_threads:", n_threads, " === \n")
   capture_run <- (n_threads == thread_grid[1])
 
-  ENCE_pred_thread <- rep(NA_real_, nrow(rain))
-  MICE_pred_thread <- rep(NA_real_, nrow(rain))
+  # Total number of stations for this number of threads
+  n_stations_needed <- stations_per_thread * n_threads
+  # Take a subset of stations
+  stations_subset    <- station_order[1:n_stations_needed]
+  # Get rainfall for this subset
+  rain_sub           <- rain[rain$stno %in% stations_subset, ]
+
+  # Indexes of observed cells
+  observed_idx <- which(!is.na(rain_sub$y))
+  set.seed(916)
+  # Shuffled repeating pattern 1,2,...,K as long as the number of observed cells
+  fold_id <- sample(rep(1:K, length.out = length(observed_idx)))
+  # Groups observed_idx into its fold
+  folds   <- split(observed_idx, fold_id)
+
+  ENCE_pred_thread <- rep(NA_real_, nrow(rain_sub))
+  MICE_pred_thread <- rep(NA_real_, nrow(rain_sub))
+
+  if (capture_run) {
+    ENCE_pred <- rep(NA_real_, nrow(rain_sub))
+    MICE_pred <- rep(NA_real_, nrow(rain_sub))
+    capture_rain_sub    <- rain_sub
+    capture_observed_idx <- observed_idx
+    capture_fold_id      <- fold_id
+  }
 
   # Loop through each fold
   for (k in seq_len(K)) {
@@ -104,7 +126,7 @@ for (n_threads in thread_grid) {
     test_idx <- folds[[k]]
   
     # Hide the masked data for this fold
-    df_miss <- rain
+    df_miss <- rain_sub
     df_miss$y[test_idx] <- NA
 
 
@@ -116,7 +138,7 @@ for (n_threads in thread_grid) {
                      C = 15000,
                      transformation = sqrt,
                      reverse_transformation = function(x) x^2,
-                     truth = rain$y, masked_idx = test_idx,
+                     truth = rain_sub$y, masked_idx = test_idx,
                      lambda_options = c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01),
                      alpha_options  = c(0.1, 0.35, 0.65, 0.9),
                      nthreads = n_threads)
@@ -151,15 +173,15 @@ for (n_threads in thread_grid) {
   }
 
   ENCE_rmse_by_thread[as.character(n_threads)] <-
-    sqrt(mean((ENCE_pred_thread[observed_idx] - rain$y[observed_idx])^2))
+    sqrt(mean((ENCE_pred_thread[observed_idx] - rain_sub$y[observed_idx])^2))
   MICE_rmse_by_thread[as.character(n_threads)] <-
-    sqrt(mean((MICE_pred_thread[observed_idx] - rain$y[observed_idx])^2))
+    sqrt(mean((MICE_pred_thread[observed_idx] - rain_sub$y[observed_idx])^2))
 }
 
 
-true_y   <- rain$y[observed_idx]
-ENCE_y   <- ENCE_pred[observed_idx]
-MICE_y   <- MICE_pred[observed_idx]
+true_y <- capture_rain_sub$y[capture_observed_idx]
+ENCE_y <- ENCE_pred[capture_observed_idx]
+MICE_y <- MICE_pred[capture_observed_idx]
 
 # Check every held-out cell got a prediction
 stopifnot(!anyNA(ENCE_y), !anyNA(MICE_y))
@@ -191,19 +213,21 @@ report_metrics <- function(true, pred, method_name, elapsed) {
 results <- list(
   # Run metadata, so this file identifies itself with no guessing
   meta = list(
-    description = "ENCE/MICE C implementation Strong Scaling, Section 4.2.2",
+    description = "ENCE/MICE C implementation Weak Scaling, Section 4.2.2",
     cutoff      = cutoff,
     K           = K,
     seed        = 916,
     years       = years,
     n_stations  = length(keep),
-    n_observed  = length(observed_idx),
+    n_observed  = length(capture_observed_idx),
     run_time    = Sys.time(),
-    thread_grid   = thread_grid
+    thread_grid = thread_grid,
+    n_avail             = n_avail,
+    stations_per_thread = stations_per_thread,
+    station_order       = station_order
   ),
 
   # Timing in seconds summed over all K folds
-
   ENCE_time   = ENCE_time,  
   MICE_time   = MICE_time,
 
@@ -221,17 +245,17 @@ results <- list(
   # Raw per-fold histories (length-K lists)
   ENCE_rmse_list   = ENCE_rmse_list,
   ENCE_val_list    = ENCE_val_list,
-  MICE_rmse_list  = MICE_rmse_list,
+  MICE_rmse_list = MICE_rmse_list,
 
   ENCE_rmse_by_thread = ENCE_rmse_by_thread,
   MICE_rmse_by_thread = MICE_rmse_by_thread,
 
   # Station Identifiers
-  stno  = rain$stno[observed_idx],
-  t     = rain$t[observed_idx],
-  east  = rain$east[observed_idx],
-  north = rain$north[observed_idx],
-  fold  = fold_id
+  stno  = capture_rain_sub$stno[capture_observed_idx],
+  t     = capture_rain_sub$t[capture_observed_idx],
+  east  = capture_rain_sub$east[capture_observed_idx],
+  north = capture_rain_sub$north[capture_observed_idx],
+  fold  = capture_fold_id
 )
 
 saveRDS(results, results_file)
