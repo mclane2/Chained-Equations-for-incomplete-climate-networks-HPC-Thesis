@@ -1,11 +1,11 @@
 
-# Filename: ENCE_C.R
+# Filename: ENCE_C_warmstart.R
 # Author: Brian O'Sullivan (modified by Marc Lane)
 # Please refer to https://doi.org/10.1002/joc.8513 for further details 
 # where the method is implemented on the Irish rainfall network
 
 ## Synchronous Elastic-net Chained Equations primary functions ##
-## Calls C implementation instead of glmnet ##
+## Calls warmstart version of C implementation instead of glmnet ##
 
 ## Primary imputation function
 
@@ -22,7 +22,7 @@
 ## updated after all the columns are updated (loop iterations are now independent)
 ## - ENCE_impute_parallel is pushed down to C, calls ence_impute_cycle
 
-ENCE_C <- function(df, response = "y",
+ENCE_C_warmstart <- function(df, response = "y",
                  hyp_cycles = 2,
                  max_cycles = 16,
                  init_method = c("mean", "idw"),
@@ -132,7 +132,7 @@ ENCE_C <- function(df, response = "y",
     old_rmse <- new_rmse
     
     # Compute imputed values and update lambdas/alphas
-    imputed_df <- ence_impute_cycle(df, missing_idx, folds, ls, as,
+    imputed_df <- warmstart_ence_impute_cycle(df, missing_idx, folds, ls, as,
                      lambdas = lambda_options, alphas = alpha_options,
                      nfolds = nfolds, nthreads = nthreads)
 
