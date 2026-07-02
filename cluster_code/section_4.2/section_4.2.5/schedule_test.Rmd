@@ -1,0 +1,329 @@
+
+# Filename: schedule_test.Rmd
+# Author: Marc Lane
+
+# ENCE - OpenMP Schedules Test
+
+Run this .Rmd to reproduce the results from the first part of Section 4.2 of my thesis
+
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo), apply the station completeness cutoff percentage
+
+```{r setup, message=FALSE}
+
+cutoff <- 0.50 # Set completeness cutoff percentage
+
+source("scripts/idw.R")
+source("scripts/ENCE_C_dynamic.R")
+source("scripts/dynamic_elastic_net_C_implementation/elastic_net_R_glue.R")
+source("scripts/ENCE_C_static.R")
+source("scripts/static_elastic_net_C_implementation/elastic_net_R_glue.R")
+source("scripts/ENCE_C_guided.R")
+source("scripts/guided_elastic_net_C_implementation/elastic_net_R_glue.R")
+
+lambda_options <- c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01)
+alpha_options  <- c(0.1, 0.35, 0.65, 0.9)
+
+data_root <- Sys.getenv("MET_EIREANN_DATA", unset = "../../../met_eireann_daily_data")
+
+# Load Met Eireann daily data and station geodata file
+years <- 2016:2025
+files <- sprintf("%s/daily_rainfall_%d.csv", data_root, years)
+rain  <- do.call(rbind, lapply(files, read.csv))
+
+stations <- read.csv(sprintf("%s/station_geodata.csv", data_root))
+
+# Attach coordinates to each daily observation
+missing_geo <- setdiff(unique(rain$stno), stations$stno)
+if (length(missing_geo)) warning("No geodata for stno: ", paste(missing_geo, collapse=", "))
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Compute total number of days
+total_days <- length(unique(rain$t))
+# Adds a completeness column = observed days / total days.
+obs_per_station$completeness <- obs_per_station$n_obs / total_days
+
+# Apply the % cutoff
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Setup output file names
+tag          <- sprintf("OpenMP_schedule_sweep")
+results_file <- sprintf("section_4_2_schedule_sweep_%s.rds", tag)
+log_file     <- sprintf("section_4_2_schedule_sweep_%s.txt", tag)
+```
+
+# Imputation
+ 
+Split data into 10 folds, mask observed entries and impute for each fold separately
+```{r run, message=FALSE, results='hide'}
+# Split the observed cells into K-folds
+set.seed(916)
+K <- 10
+# Indexes of observed cells
+observed_idx <- which(!is.na(rain$y))
+# Shuffled repeating pattern 1,2,...,K as long as the number of observed cells
+fold_id      <- sample(rep(1:K, length.out = length(observed_idx)))
+# Groups observed_idx into its fold
+folds        <- split(observed_idx, fold_id)
+
+# Initialising variables
+dynamic_pred <- rep(NA_real_, nrow(rain))
+static_pred   <- rep(NA_real_, nrow(rain))
+guided_pred   <- rep(NA_real_, nrow(rain))
+dynamic_time <- 0
+static_time   <- 0
+guided_time   <- 0
+dynamic_rmse_list <- vector("list", K)
+dynamic_val_list  <- vector("list", K)
+static_rmse_list <- vector("list", K)
+static_val_list  <- vector("list", K)
+guided_rmse_list <- vector("list", K)
+guided_val_list  <- vector("list", K)
+dynamic_lambda_final <- vector("list", K)
+static_lambda_final   <- vector("list", K)
+guided_lambda_final   <- vector("list", K)
+dynamic_alpha_final  <- vector("list", K)
+static_alpha_final    <- vector("list", K)
+guided_alpha_final  <- vector("list", K)
+dynamic_time_vec     <- numeric(K)
+static_time_vec <- numeric(K)
+guided_time_vec    <- numeric(K)
+
+# Loop through each fold
+for (k in seq_len(K)) {
+  cat("Fold", k, "of", K, "\n")
+  
+  test_idx <- folds[[k]]
+  
+  # Hide the masked data for this fold
+  df_miss <- rain
+  df_miss$y[test_idx] <- NA
+  
+  # Run dynamic C implementation 
+  dynamic_time_vec[k] <- system.time({
+    dynamic_imp <- ENCE_C_dynamic(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = test_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
+  })["elapsed"]
+  dynamic_time <- dynamic_time + dynamic_time_vec[k]
+
+  # Run static C implementation
+  static_time_vec[k] <- system.time({
+    static_imp <- ENCE_C_static(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = test_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
+  })["elapsed"]
+  static_time <- static_time + static_time_vec[k]
+
+  # Run guided set recycling C implementation
+  guided_time_vec[k] <- system.time({
+    guided_imp <- ENCE_C_guided(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = test_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
+  })["elapsed"]
+  guided_time <- guided_time + guided_time_vec[k]
+
+  # Fill in imputed values for this fold
+  dynamic_pred[test_idx] <- dynamic_imp$y[test_idx]
+  static_pred[test_idx] <- static_imp$y[test_idx]
+  guided_pred[test_idx] <- guided_imp$y[test_idx]
+
+  # Record RMSE lists for this fold
+  dynamic_rmse_list[[k]] <- attr(dynamic_imp, "rmse_history")
+  static_rmse_list[[k]]   <- attr(static_imp,   "rmse_history")
+  guided_rmse_list[[k]]   <- attr(guided_imp,   "rmse_history")
+  dynamic_val_list[[k]]  <- attr(dynamic_imp, "val_rmse_history")
+  static_val_list[[k]]    <- attr(static_imp,   "val_rmse_history")
+  guided_val_list[[k]]    <- attr(guided_imp,   "val_rmse_history")
+
+  # Record hyperparameter values for this fold
+  dynamic_ls <- attr(dynamic_imp, "ls_history")
+  dynamic_as <- attr(dynamic_imp, "as_history")
+  static_ls   <- attr(static_imp,   "ls_history")
+  static_as   <- attr(static_imp,   "as_history")
+  guided_ls   <- attr(guided_imp,   "ls_history")
+  guided_as   <- attr(guided_imp,   "as_history")
+  dynamic_l <- dynamic_ls[[2]]
+  dynamic_a <- dynamic_as[[2]]
+  static_l   <- static_ls[[2]]
+  static_a   <- static_as[[2]]
+  guided_l   <- guided_ls[[2]]
+  guided_a   <- guided_as[[2]]
+  dynamic_lambda_final[[k]] <- dynamic_ls[[length(dynamic_ls)]]
+  dynamic_alpha_final[[k]]  <- dynamic_as[[length(dynamic_as)]]
+  static_lambda_final[[k]]   <- static_ls[[length(static_ls)]]
+  static_alpha_final[[k]]    <- static_as[[length(static_as)]]
+  guided_lambda_final[[k]]   <- guided_ls[[length(guided_ls)]]
+  guided_alpha_final[[k]]    <- guided_as[[length(guided_as)]]
+
+  cat("Cumulative  dynamic:", round(dynamic_time, 1), "s   static:", round(static_time, 1), "s   guided:", round(guided_time, 1) ,"\n")
+}
+
+true_y   <- rain$y[observed_idx]
+dynamic_y <- dynamic_pred[observed_idx]
+static_y   <- static_pred[observed_idx]
+guided_y   <- guided_pred[observed_idx]
+
+# Check every held-out cell got a prediction
+stopifnot(!anyNA(dynamic_y), !anyNA(static_y), !anyNA(guided_y))
+
+# Pad folds with shorter RMSE history with NA's, bind into a matrix 
+pad <- function(lst) sapply(lst, function(v) c(v, rep(NA, max(lengths(lst)) - length(v))))
+# Calculates the mean of the RMSE lists across folds
+dynamic_rmse <- rowMeans(pad(dynamic_rmse_list), na.rm = TRUE)
+static_rmse   <- rowMeans(pad(static_rmse_list),   na.rm = TRUE)
+guided_rmse   <- rowMeans(pad(guided_rmse_list),   na.rm = TRUE)
+dynamic_val  <- rowMeans(pad(dynamic_val_list),  na.rm = TRUE)
+static_val    <- rowMeans(pad(static_val_list),    na.rm = TRUE)
+guided_val    <- rowMeans(pad(guided_val_list),    na.rm = TRUE)
+
+```
+
+## Helper Functions
+```{r helper functions, message=FALSE}
+report_metrics <- function(true, pred, method_name, elapsed) {
+  rmse <- sqrt(mean((pred - true)^2))
+  cat(method_name, "\n", sep = "")
+  cat("Time:  ", round(elapsed, 2), "seconds\n")
+  cat("RMSE:  ", rmse, "\n")
+  cat("Bias %:", sum(pred - true) / sum(true) * 100, "\n")
+  cat("R2:    ", 1 - sum((pred - true)^2) / sum((true - mean(true))^2), "\n")
+  cat("SRMSE: ", rmse / mean(true), "\n\n")
+}
+```
+
+# Save Results
+
+```{r save_results}
+results <- list(
+  # Run metadata, so this file identifies itself with no guessing
+  meta = list(
+    description = "OpenMP schedule sweep (dynamic/static/guided), C ENCE implementation, Section 4.2.5",
+    cutoff      = cutoff,
+    K           = K,
+    seed        = 916,
+    years       = years,
+    n_stations  = length(keep),
+    n_observed  = length(observed_idx),
+    run_time    = Sys.time(),
+    hostname       = Sys.info()[["nodename"]],
+    slurm_job_id   = Sys.getenv("SLURM_JOB_ID"),
+    slurm_nodelist = Sys.getenv("SLURM_NODELIST"),
+    r_version      = R.version.string
+  ),
+
+  # Timing in seconds summed over all K folds
+  dynamic_time = dynamic_time,
+  static_time   = static_time,
+  guided_time   = guided_time,
+  dynamic_time_vec = dynamic_time_vec,
+  static_time_vec   = static_time_vec,
+  guided_time_vec   = guided_time_vec,
+
+
+  # Held-out predictions for observed-vs-predicted scatterplots
+  true_y   = true_y,
+  dynamic_y = dynamic_y,
+  static_y   = static_y,
+  guided_y   = guided_y,
+
+  # Internal convergence RMSE (between cycles) averaged across folds per cycle
+  dynamic_rmse = dynamic_rmse,
+  static_rmse  = static_rmse,
+  guided_rmse     = guided_rmse,
+
+  # Validation RMSE on masked cells averaged across folds per cycle
+  dynamic_val = dynamic_val,
+  static_val  = static_val,
+  guided_val     = guided_val,
+
+  # Raw per-fold histories (length-K lists)
+  dynamic_rmse_list = dynamic_rmse_list,
+  static_rmse_list   = static_rmse_list,
+  guided_rmse_list   = guided_rmse_list,
+  dynamic_val_list  = dynamic_val_list,
+  static_val_list    = static_val_list,
+  guided_val_list    = guided_val_list,
+
+  dynamic_lambda_final = dynamic_lambda_final,
+  static_lambda_final   = static_lambda_final,
+  guided_lambda_final   = guided_lambda_final,
+  dynamic_alpha_final  = dynamic_alpha_final,
+  static_alpha_final    = static_alpha_final,
+  guided_alpha_final    = guided_alpha_final,
+
+  # Station Identifiers
+  stno  = rain$stno[observed_idx],
+  t     = rain$t[observed_idx],
+  east  = rain$east[observed_idx],
+  north = rain$north[observed_idx],
+  fold  = fold_id
+)
+
+saveRDS(results, results_file)
+cat("Saved results to", results_file, "\n")
+```
+
+# Save printed log
+
+```{r save_log}
+log_lines <- capture.output({
+  report_metrics(true_y, dynamic_y, "dynamic", dynamic_time)
+  report_metrics(true_y, static_y, "static", static_time)
+  report_metrics(true_y, guided_y, "guided", guided_time)
+
+  cat("\nFinal lambda chosen (dynamic), pooled over", K, "folds\n")
+  print(table(factor(unlist(dynamic_lambda_final), levels = sort(lambda_options))))
+  cat("\nFinal lambda chosen (static), pooled over", K, "folds\n")
+  print(table(factor(unlist(static_lambda_final), levels = sort(lambda_options))))
+  cat("\nFinal lambda chosen (guided), pooled over", K, "folds\n")
+  print(table(factor(unlist(guided_lambda_final), levels = sort(lambda_options))))
+
+  cat("\nFinal alpha chosen (dynamic), pooled over", K, "folds\n")
+  print(table(factor(unlist(dynamic_alpha_final), levels = sort(alpha_options))))
+  cat("\nFinal alpha chosen (static), pooled over", K, "folds\n")
+  print(table(factor(unlist(static_alpha_final), levels = sort(alpha_options))))
+  cat("\nFinal alpha chosen (guided), pooled over", K, "folds\n")
+  print(table(factor(unlist(guided_alpha_final), levels = sort(alpha_options))))
+
+})
+
+writeLines(log_lines, log_file)
+cat(log_lines, sep = "\n")
+cat("\nSaved log to", log_file, "\n")
+```

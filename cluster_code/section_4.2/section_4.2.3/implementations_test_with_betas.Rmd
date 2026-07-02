@@ -22,15 +22,17 @@ source("scripts_with_betas/warmstart_elastic_net_C_implementation/elastic_net_R_
 source("scripts_with_betas/ENCE_C_active.R")
 source("scripts_with_betas/active_elastic_net_C_implementation/elastic_net_R_glue.R")
 
+data_root <- Sys.getenv("MET_EIREANN_DATA", unset = "../../../met_eireann_daily_data")
+
 lambda_options <- c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01)
 alpha_options  <- c(0.1, 0.35, 0.65, 0.9)
 
 # Load Met Eireann daily data and station geodata file
-years <- 2016
-files <- sprintf("../met_eireann_daily_data/daily_rainfall_%d.csv", years)
+years <- 2016:2025
+files    <- sprintf("%s/daily_rainfall_%d.csv", data_root, years)
 rain  <- do.call(rbind, lapply(files, read.csv))
 
-stations   <- read.csv("../met_eireann_daily_data/station_geodata.csv")
+stations <- read.csv(sprintf("%s/station_geodata.csv", data_root))
 
 # Attach coordinates to each daily observation
 missing_geo <- setdiff(unique(rain$stno), stations$stno)
@@ -160,7 +162,12 @@ results <- list(
     n_stations  = length(keep),
     n_observed  = length(observed_idx),
     n_masked    = length(masked_idx),
-    run_time    = Sys.time()
+    run_time    = Sys.time(),
+    hostname       = Sys.info()[["nodename"]],
+    slurm_job_id   = Sys.getenv("SLURM_JOB_ID"),
+    slurm_nodelist = Sys.getenv("SLURM_NODELIST"),
+    r_version      = R.version.string
+
   ),
 
   naive_time = naive_time,
@@ -192,7 +199,6 @@ results <- list(
 
 saveRDS(results, results_file)
 
-# Beta trajectories, one CSV per implementation, tagged with cutoff so reruns don't clobber each other
 write.csv(attr(naive_imp, "beta_history"),     sprintf("betas_naive_history_cutoff%d.csv", cutoff*100),     row.names = FALSE)
 write.csv(attr(warmstart_imp, "beta_history"), sprintf("betas_warmstart_history_cutoff%d.csv", cutoff*100), row.names = FALSE)
 write.csv(attr(active_imp, "beta_history"),    sprintf("betas_active_history_cutoff%d.csv", cutoff*100),    row.names = FALSE)

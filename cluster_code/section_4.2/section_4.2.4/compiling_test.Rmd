@@ -1,0 +1,627 @@
+# Filename: compiling_test.Rmd
+# Author: Marc Lane
+
+# ENCE - Compilation flags/pragmas Test
+
+Run this .Rmd to reproduce the results from the first part of Section 4.2 of my thesis
+
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo), apply the station completeness cutoff percentage
+
+```{r setup, message=FALSE}
+
+cutoff <- 0.50 # Set completeness cutoff percentage
+
+source("scripts/idw.R")
+source("scripts/ENCE_C_O0.R")
+source("scripts/O0_C_implementation/elastic_net_R_glue.R")
+source("scripts/ENCE_C_O2.R")
+source("scripts/O2_C_implementation/elastic_net_R_glue.R")
+source("scripts/ENCE_C_O3.R")
+source("scripts/O3_C_implementation/elastic_net_R_glue.R")
+source("scripts/ENCE_C_march.R")
+source("scripts/march_C_implementation/elastic_net_R_glue.R")
+source("scripts/ENCE_C_unroll.R")
+source("scripts/unroll_C_implementation/elastic_net_R_glue.R")
+source("scripts/ENCE_C_flto.R")
+source("scripts/flto_C_implementation/elastic_net_R_glue.R")
+source("scripts/ENCE_C_noSIMD.R")
+source("scripts/production_noSIMD_C_implementation/elastic_net_R_glue.R")
+source("scripts/ENCE_C_production.R")
+source("scripts/production_C_implementation/elastic_net_R_glue.R")
+source("scripts/ENCE_C_fastmath.R")
+source("scripts/production_fastmath_C_implementation/elastic_net_R_glue.R")
+
+lambda_options <- c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01)
+alpha_options  <- c(0.1, 0.35, 0.65, 0.9)
+
+data_root <- Sys.getenv("MET_EIREANN_DATA", unset = "../../../met_eireann_daily_data")
+
+# Load Met Eireann daily data and station geodata file
+years <- 2016:2025
+files    <- sprintf("%s/daily_rainfall_%d.csv", data_root, years)
+rain  <- do.call(rbind, lapply(files, read.csv))
+
+stations <- read.csv(sprintf("%s/station_geodata.csv", data_root))
+
+# Attach coordinates to each daily observation
+missing_geo <- setdiff(unique(rain$stno), stations$stno)
+if (length(missing_geo)) warning("No geodata for stno: ", paste(missing_geo, collapse=", "))
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Compute total number of days
+total_days <- length(unique(rain$t))
+# Adds a completeness column = observed days / total days.
+obs_per_station$completeness <- obs_per_station$n_obs / total_days
+
+# Apply the % cutoff
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Setup output file names
+tag          <- sprintf("Compiler_flags_pragmas_Sweep")
+results_file <- sprintf("section_4_2_compiler_sweep_%s.rds", tag)
+log_file     <- sprintf("section_4_2_compiler_sweep_%s.txt", tag)
+```
+
+# Imputation
+ 
+Split data into 10 folds, mask observed entries and impute for each fold separately
+```{r run, message=FALSE, results='hide'}
+# Split the observed cells into K-folds
+set.seed(916)
+K <- 10
+# Indexes of observed cells
+observed_idx <- which(!is.na(rain$y))
+# Shuffled repeating pattern 1,2,...,K as long as the number of observed cells
+fold_id      <- sample(rep(1:K, length.out = length(observed_idx)))
+# Groups observed_idx into its fold
+folds        <- split(observed_idx, fold_id)
+
+# Initialising variables
+O0_pred <- rep(NA_real_, nrow(rain))
+O2_pred <- rep(NA_real_, nrow(rain))
+O3_pred <- rep(NA_real_, nrow(rain))
+march_pred <- rep(NA_real_, nrow(rain))
+unroll_pred <- rep(NA_real_, nrow(rain))
+flto_pred <- rep(NA_real_, nrow(rain))
+noSIMD_pred <- rep(NA_real_, nrow(rain))
+production_pred <- rep(NA_real_, nrow(rain))
+fastmath_pred <- rep(NA_real_, nrow(rain))
+O0_time <- 0
+O2_time <- 0
+O3_time <- 0
+march_time <- 0
+unroll_time <- 0
+flto_time <- 0
+noSIMD_time <- 0
+production_time <- 0
+fastmath_time <- 0
+O0_rmse_list <- vector("list", K)
+O0_val_list  <- vector("list", K)
+O2_rmse_list <- vector("list", K)
+O2_val_list  <- vector("list", K)
+O3_rmse_list <- vector("list", K)
+O3_val_list  <- vector("list", K)
+march_rmse_list <- vector("list", K)
+march_val_list  <- vector("list", K)
+unroll_rmse_list <- vector("list", K)
+unroll_val_list  <- vector("list", K)
+flto_rmse_list <- vector("list", K)
+flto_val_list  <- vector("list", K)
+noSIMD_rmse_list <- vector("list", K)
+noSIMD_val_list  <- vector("list", K)
+production_rmse_list <- vector("list", K)
+production_val_list  <- vector("list", K)
+fastmath_rmse_list <- vector("list", K)
+fastmath_val_list  <- vector("list", K)
+O0_lambda_final <- vector("list", K)
+O2_lambda_final <- vector("list", K)
+O3_lambda_final <- vector("list", K)
+march_lambda_final <- vector("list", K)
+unroll_lambda_final <- vector("list", K)
+flto_lambda_final <- vector("list", K)
+noSIMD_lambda_final <- vector("list", K)
+production_lambda_final <- vector("list", K)
+fastmath_lambda_final <- vector("list", K)
+O0_alpha_final <- vector("list", K)
+O2_alpha_final <- vector("list", K)
+O3_alpha_final <- vector("list", K)
+march_alpha_final <- vector("list", K)
+unroll_alpha_final <- vector("list", K)
+flto_alpha_final <- vector("list", K)
+noSIMD_alpha_final <- vector("list", K)
+production_alpha_final <- vector("list", K)
+fastmath_alpha_final <- vector("list", K)
+O0_time_vec <- numeric(K)
+O2_time_vec <- numeric(K)
+O3_time_vec <- numeric(K)
+march_time_vec <- numeric(K)
+unroll_time_vec <- numeric(K)
+flto_time_vec <- numeric(K)
+noSIMD_time_vec <- numeric(K)
+production_time_vec <- numeric(K)
+fastmath_time_vec <- numeric(K)
+
+# Loop through each fold
+for (k in seq_len(K)) {
+  cat("Fold", k, "of", K, "\n")
+  
+  test_idx <- folds[[k]]
+  
+  # Hide the masked data for this fold
+  df_miss <- rain
+  df_miss$y[test_idx] <- NA
+  
+  # Run O0 C implementation 
+  O0_time_vec[k] <- system.time({
+    O0_imp <- ENCE_C_O0(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = test_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
+  })["elapsed"]
+  O0_time <- O0_time + O0_time_vec[k]
+
+  # Run O2 C implementation
+  O2_time_vec[k] <- system.time({
+    O2_imp <- ENCE_C_O2(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = test_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
+  })["elapsed"]
+  O2_time <- O2_time + O2_time_vec[k]
+
+  # Run O3 C implementation
+  O3_time_vec[k] <- system.time({
+    O3_imp <- ENCE_C_O3(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = test_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
+  })["elapsed"]
+  O3_time <- O3_time + O3_time_vec[k]
+
+  # Run march C implementation
+  march_time_vec[k] <- system.time({
+    march_imp <- ENCE_C_march(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = test_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
+  })["elapsed"]
+  march_time <- march_time + march_time_vec[k]
+
+  # Run unroll C implementation
+  unroll_time_vec[k] <- system.time({
+    unroll_imp <- ENCE_C_unroll(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = test_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
+  })["elapsed"]
+  unroll_time <- unroll_time + unroll_time_vec[k]
+
+  # Run flto C implementation
+  flto_time_vec[k] <- system.time({
+    flto_imp <- ENCE_C_flto(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = test_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
+  })["elapsed"]
+  flto_time <- flto_time + flto_time_vec[k]
+
+  # Run noSIMD C implementation
+  noSIMD_time_vec[k] <- system.time({
+    noSIMD_imp <- ENCE_C_noSIMD(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = test_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
+  })["elapsed"]
+  noSIMD_time <- noSIMD_time + noSIMD_time_vec[k]
+
+  # Run production C implementation
+  production_time_vec[k] <- system.time({
+    production_imp <- ENCE_C_production(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = test_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
+  })["elapsed"]
+  production_time <- production_time + production_time_vec[k]
+
+  # Run fastmath C implementation
+  fastmath_time_vec[k] <- system.time({
+    fastmath_imp <- ENCE_C_fastmath(df_miss, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = rain$y, masked_idx = test_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
+  })["elapsed"]
+  fastmath_time <- fastmath_time + fastmath_time_vec[k]
+
+  # Fill in imputed values for this fold
+  O0_pred[test_idx] <- O0_imp$y[test_idx]
+  O2_pred[test_idx] <- O2_imp$y[test_idx]
+  O3_pred[test_idx] <- O3_imp$y[test_idx]
+  march_pred[test_idx] <- march_imp$y[test_idx]
+  unroll_pred[test_idx] <- unroll_imp$y[test_idx]
+  flto_pred[test_idx] <- flto_imp$y[test_idx]
+  noSIMD_pred[test_idx] <- noSIMD_imp$y[test_idx]
+  production_pred[test_idx] <- production_imp$y[test_idx]
+  fastmath_pred[test_idx] <- fastmath_imp$y[test_idx]
+
+  # Record RMSE lists for this fold
+  O0_rmse_list[[k]] <- attr(O0_imp, "rmse_history")
+  O2_rmse_list[[k]] <- attr(O2_imp, "rmse_history")
+  O3_rmse_list[[k]] <- attr(O3_imp, "rmse_history")
+  march_rmse_list[[k]] <- attr(march_imp, "rmse_history")
+  unroll_rmse_list[[k]] <- attr(unroll_imp, "rmse_history")
+  flto_rmse_list[[k]] <- attr(flto_imp, "rmse_history")
+  noSIMD_rmse_list[[k]] <- attr(noSIMD_imp, "rmse_history")
+  production_rmse_list[[k]] <- attr(production_imp, "rmse_history")
+  fastmath_rmse_list[[k]] <- attr(fastmath_imp, "rmse_history")
+  O0_val_list[[k]] <- attr(O0_imp, "val_rmse_history")
+  O2_val_list[[k]] <- attr(O2_imp, "val_rmse_history")
+  O3_val_list[[k]] <- attr(O3_imp, "val_rmse_history")
+  march_val_list[[k]] <- attr(march_imp, "val_rmse_history")
+  unroll_val_list[[k]] <- attr(unroll_imp, "val_rmse_history")
+  flto_val_list[[k]] <- attr(flto_imp, "val_rmse_history")
+  noSIMD_val_list[[k]] <- attr(noSIMD_imp, "val_rmse_history")
+  production_val_list[[k]] <- attr(production_imp, "val_rmse_history")
+  fastmath_val_list[[k]] <- attr(fastmath_imp, "val_rmse_history")
+
+  # Record hyperparameter values for this fold
+  O0_ls <- attr(O0_imp, "ls_history")
+  O0_as <- attr(O0_imp, "as_history")
+  O2_ls <- attr(O2_imp, "ls_history")
+  O2_as <- attr(O2_imp, "as_history")
+  O3_ls <- attr(O3_imp, "ls_history")
+  O3_as <- attr(O3_imp, "as_history")
+  march_ls <- attr(march_imp, "ls_history")
+  march_as <- attr(march_imp, "as_history")
+  unroll_ls <- attr(unroll_imp, "ls_history")
+  unroll_as <- attr(unroll_imp, "as_history")
+  flto_ls <- attr(flto_imp, "ls_history")
+  flto_as <- attr(flto_imp, "as_history")
+  noSIMD_ls <- attr(noSIMD_imp, "ls_history")
+  noSIMD_as <- attr(noSIMD_imp, "as_history")
+  production_ls <- attr(production_imp, "ls_history")
+  production_as <- attr(production_imp, "as_history")
+  fastmath_ls <- attr(fastmath_imp, "ls_history")
+  fastmath_as <- attr(fastmath_imp, "as_history")
+  O0_l <- O0_ls[[2]]
+  O0_a <- O0_as[[2]]
+  O2_l <- O2_ls[[2]]
+  O2_a <- O2_as[[2]]
+  O3_l <- O3_ls[[2]]
+  O3_a <- O3_as[[2]]
+  march_l <- march_ls[[2]]
+  march_a <- march_as[[2]]
+  unroll_l <- unroll_ls[[2]]
+  unroll_a <- unroll_as[[2]]
+  flto_l <- flto_ls[[2]]
+  flto_a <- flto_as[[2]]
+  noSIMD_l <- noSIMD_ls[[2]]
+  noSIMD_a <- noSIMD_as[[2]]
+  production_l <- production_ls[[2]]
+  production_a <- production_as[[2]]
+  fastmath_l <- fastmath_ls[[2]]
+  fastmath_a <- fastmath_as[[2]]
+  O0_lambda_final[[k]] <- O0_ls[[length(O0_ls)]]
+  O0_alpha_final[[k]]  <- O0_as[[length(O0_as)]]
+  O2_lambda_final[[k]] <- O2_ls[[length(O2_ls)]]
+  O2_alpha_final[[k]]  <- O2_as[[length(O2_as)]]
+  O3_lambda_final[[k]] <- O3_ls[[length(O3_ls)]]
+  O3_alpha_final[[k]]  <- O3_as[[length(O3_as)]]
+  march_lambda_final[[k]] <- march_ls[[length(march_ls)]]
+  march_alpha_final[[k]]  <- march_as[[length(march_as)]]
+  unroll_lambda_final[[k]] <- unroll_ls[[length(unroll_ls)]]
+  unroll_alpha_final[[k]]  <- unroll_as[[length(unroll_as)]]
+  flto_lambda_final[[k]] <- flto_ls[[length(flto_ls)]]
+  flto_alpha_final[[k]]  <- flto_as[[length(flto_as)]]
+  noSIMD_lambda_final[[k]] <- noSIMD_ls[[length(noSIMD_ls)]]
+  noSIMD_alpha_final[[k]]  <- noSIMD_as[[length(noSIMD_as)]]
+  production_lambda_final[[k]] <- production_ls[[length(production_ls)]]
+  production_alpha_final[[k]]  <- production_as[[length(production_as)]]
+  fastmath_lambda_final[[k]] <- fastmath_ls[[length(fastmath_ls)]]
+  fastmath_alpha_final[[k]]  <- fastmath_as[[length(fastmath_as)]]
+}
+
+true_y   <- rain$y[observed_idx]
+O0_y <- O0_pred[observed_idx]
+O2_y <- O2_pred[observed_idx]
+O3_y <- O3_pred[observed_idx]
+march_y <- march_pred[observed_idx]
+unroll_y <- unroll_pred[observed_idx]
+flto_y <- flto_pred[observed_idx]
+noSIMD_y <- noSIMD_pred[observed_idx]
+production_y <- production_pred[observed_idx]
+fastmath_y <- fastmath_pred[observed_idx]
+
+
+# Check every held-out cell got a prediction
+stopifnot(!anyNA(O0_y), !anyNA(O2_y), !anyNA(O3_y), !anyNA(march_y), !anyNA(unroll_y),
+          !anyNA(flto_y), !anyNA(noSIMD_y), !anyNA(production_y), !anyNA(fastmath_y))
+
+# Pad folds with shorter RMSE history with NA's, bind into a matrix 
+pad <- function(lst) sapply(lst, function(v) c(v, rep(NA, max(lengths(lst)) - length(v))))
+# Calculates the mean of the RMSE lists across folds
+O0_rmse <- rowMeans(pad(O0_rmse_list), na.rm = TRUE)
+O2_rmse <- rowMeans(pad(O2_rmse_list), na.rm = TRUE)
+O3_rmse <- rowMeans(pad(O3_rmse_list), na.rm = TRUE)
+march_rmse <- rowMeans(pad(march_rmse_list), na.rm = TRUE)
+unroll_rmse <- rowMeans(pad(unroll_rmse_list), na.rm = TRUE)
+flto_rmse <- rowMeans(pad(flto_rmse_list), na.rm = TRUE)
+noSIMD_rmse <- rowMeans(pad(noSIMD_rmse_list), na.rm = TRUE)
+production_rmse <- rowMeans(pad(production_rmse_list), na.rm = TRUE)
+fastmath_rmse <- rowMeans(pad(fastmath_rmse_list), na.rm = TRUE)
+O0_val <- rowMeans(pad(O0_val_list), na.rm = TRUE)
+O2_val <- rowMeans(pad(O2_val_list), na.rm = TRUE)
+O3_val <- rowMeans(pad(O3_val_list), na.rm = TRUE)
+march_val <- rowMeans(pad(march_val_list), na.rm = TRUE)
+unroll_val <- rowMeans(pad(unroll_val_list), na.rm = TRUE)
+flto_val <- rowMeans(pad(flto_val_list), na.rm = TRUE)
+noSIMD_val <- rowMeans(pad(noSIMD_val_list), na.rm = TRUE)
+production_val <- rowMeans(pad(production_val_list), na.rm = TRUE)
+fastmath_val <- rowMeans(pad(fastmath_val_list), na.rm = TRUE)
+```
+
+## Helper Functions
+```{r helper functions, message=FALSE}
+report_metrics <- function(true, pred, method_name, elapsed) {
+  rmse <- sqrt(mean((pred - true)^2))
+  cat(method_name, "\n", sep = "")
+  cat("Time:  ", round(elapsed, 2), "seconds\n")
+  cat("RMSE:  ", rmse, "\n")
+  cat("Bias %:", sum(pred - true) / sum(true) * 100, "\n")
+  cat("R2:    ", 1 - sum((pred - true)^2) / sum((true - mean(true))^2), "\n")
+  cat("SRMSE: ", rmse / mean(true), "\n\n")
+}
+```
+
+# Save Results
+
+```{r save_results}
+results <- list(
+  # Run metadata, so this file identifies itself with no guessing
+  meta = list(
+    description = "C Compiler/flags/pragmas",
+    cutoff      = cutoff,
+    K           = K,
+    seed        = 916,
+    years       = years,
+    n_stations  = length(keep),
+    n_observed  = length(observed_idx),
+    run_time    = Sys.time(),
+    hostname       = Sys.info()[["nodename"]],
+    slurm_job_id   = Sys.getenv("SLURM_JOB_ID"),
+    slurm_nodelist = Sys.getenv("SLURM_NODELIST"),
+    r_version      = R.version.string
+  ),
+
+  # Timing in seconds summed over all K folds
+  O0_time = O0_time,
+  O2_time = O2_time,
+  O3_time = O3_time,
+  march_time = march_time,
+  unroll_time = unroll_time,
+  flto_time = flto_time,
+  noSIMD_time = noSIMD_time,
+  production_time = production_time,
+  fastmath_time = fastmath_time,
+  O0_time_vec = O0_time_vec,
+  O2_time_vec = O2_time_vec,
+  O3_time_vec = O3_time_vec,
+  march_time_vec = march_time_vec,
+  unroll_time_vec = unroll_time_vec,
+  flto_time_vec = flto_time_vec,
+  noSIMD_time_vec = noSIMD_time_vec,
+  production_time_vec = production_time_vec,
+  fastmath_time_vec = fastmath_time_vec,
+
+
+  # Held-out predictions for observed-vs-predicted scatterplots
+  true_y = true_y,
+  O0_y = O0_y,
+  O2_y = O2_y,
+  O3_y = O3_y,
+  march_y = march_y,
+  unroll_y = unroll_y,
+  flto_y = flto_y,
+  noSIMD_y = noSIMD_y,
+  production_y = production_y,
+  fastmath_y = fastmath_y,
+
+  # Internal convergence RMSE (between cycles) averaged across folds per cycle
+  O0_rmse = O0_rmse,
+  O2_rmse = O2_rmse,
+  O3_rmse = O3_rmse,
+  march_rmse = march_rmse,
+  unroll_rmse = unroll_rmse,
+  flto_rmse = flto_rmse,
+  noSIMD_rmse = noSIMD_rmse,
+  production_rmse = production_rmse,
+  fastmath_rmse = fastmath_rmse,
+
+  # Validation RMSE on masked cells averaged across folds per cycle
+  O0_val = O0_val,
+  O2_val = O2_val,
+  O3_val = O3_val,
+  march_val = march_val,
+  unroll_val = unroll_val,
+  flto_val = flto_val,
+  noSIMD_val = noSIMD_val,
+  production_val = production_val,
+  fastmath_val = fastmath_val,
+
+  # Raw per-fold histories (length-K lists)
+  O0_rmse_list = O0_rmse_list,
+  O2_rmse_list = O2_rmse_list,
+  O3_rmse_list = O3_rmse_list,
+  march_rmse_list = march_rmse_list,
+  unroll_rmse_list = unroll_rmse_list,
+  flto_rmse_list = flto_rmse_list,
+  noSIMD_rmse_list = noSIMD_rmse_list,
+  production_rmse_list = production_rmse_list,
+  fastmath_rmse_list = fastmath_rmse_list,
+  O0_val_list = O0_val_list,
+  O2_val_list = O2_val_list,
+  O3_val_list = O3_val_list,
+  march_val_list = march_val_list,
+  unroll_val_list = unroll_val_list,
+  flto_val_list = flto_val_list,
+  noSIMD_val_list = noSIMD_val_list,
+  production_val_list = production_val_list,
+  fastmath_val_list = fastmath_val_list,
+
+  O0_lambda_final = O0_lambda_final,
+  O2_lambda_final = O2_lambda_final,
+  O3_lambda_final = O3_lambda_final,
+  march_lambda_final = march_lambda_final,
+  unroll_lambda_final = unroll_lambda_final,
+  flto_lambda_final = flto_lambda_final,
+  noSIMD_lambda_final = noSIMD_lambda_final,
+  production_lambda_final = production_lambda_final,
+  fastmath_lambda_final = fastmath_lambda_final,
+  O0_alpha_final = O0_alpha_final,
+  O2_alpha_final = O2_alpha_final,
+  O3_alpha_final = O3_alpha_final,
+  march_alpha_final = march_alpha_final,
+  unroll_alpha_final = unroll_alpha_final,
+  flto_alpha_final = flto_alpha_final,
+  noSIMD_alpha_final = noSIMD_alpha_final,
+  production_alpha_final = production_alpha_final,
+  fastmath_alpha_final = fastmath_alpha_final,
+  
+  # Station Identifiers
+  stno  = rain$stno[observed_idx],
+  t     = rain$t[observed_idx],
+  east  = rain$east[observed_idx],
+  north = rain$north[observed_idx],
+  fold  = fold_id
+)
+
+saveRDS(results, results_file)
+cat("Saved results to", results_file, "\n")
+```
+
+# Save printed log
+
+```{r save_log}
+log_lines <- capture.output({
+  report_metrics(true_y, O0_y, "O0", O0_time)
+  report_metrics(true_y, O2_y, "O2", O2_time)
+  report_metrics(true_y, O3_y, "O3", O3_time)
+  report_metrics(true_y, march_y, "march", march_time)
+  report_metrics(true_y, unroll_y, "unroll", unroll_time)
+  report_metrics(true_y, flto_y, "flto", flto_time)
+  report_metrics(true_y, noSIMD_y, "noSIMD", noSIMD_time)
+  report_metrics(true_y, production_y, "production", production_time)
+  report_metrics(true_y, fastmath_y, "fastmath", fastmath_time)
+
+  cat("\nFinal lambda chosen (O0), pooled over", K, "folds\n")
+  print(table(factor(unlist(O0_lambda_final), levels = sort(lambda_options))))
+  cat("\nFinal lambda chosen (O2), pooled over", K, "folds\n")
+  print(table(factor(unlist(O2_lambda_final), levels = sort(lambda_options))))
+  cat("\nFinal lambda chosen (O3), pooled over", K, "folds\n")
+  print(table(factor(unlist(O3_lambda_final), levels = sort(lambda_options))))
+  cat("\nFinal lambda chosen (march), pooled over", K, "folds\n")
+  print(table(factor(unlist(march_lambda_final), levels = sort(lambda_options))))
+  cat("\nFinal lambda chosen (unroll), pooled over", K, "folds\n")
+  print(table(factor(unlist(unroll_lambda_final), levels = sort(lambda_options))))
+  cat("\nFinal lambda chosen (flto), pooled over", K, "folds\n")
+  print(table(factor(unlist(flto_lambda_final), levels = sort(lambda_options))))
+  cat("\nFinal lambda chosen (noSIMD), pooled over", K, "folds\n")
+  print(table(factor(unlist(noSIMD_lambda_final), levels = sort(lambda_options))))
+  cat("\nFinal lambda chosen (production), pooled over", K, "folds\n")
+  print(table(factor(unlist(production_lambda_final), levels = sort(lambda_options))))
+  cat("\nFinal lambda chosen (fastmath), pooled over", K, "folds\n")
+  print(table(factor(unlist(fastmath_lambda_final), levels = sort(lambda_options))))
+
+
+  cat("\nFinal alpha chosen (O0), pooled over", K, "folds\n")
+  print(table(factor(unlist(O0_alpha_final), levels = sort(alpha_options))))
+  cat("\nFinal alpha chosen (O2), pooled over", K, "folds\n")
+  print(table(factor(unlist(O2_alpha_final), levels = sort(alpha_options))))
+  cat("\nFinal alpha chosen (O3), pooled over", K, "folds\n")
+  print(table(factor(unlist(O3_alpha_final), levels = sort(alpha_options))))
+  cat("\nFinal alpha chosen (march), pooled over", K, "folds\n")
+  print(table(factor(unlist(march_alpha_final), levels = sort(alpha_options))))
+  cat("\nFinal alpha chosen (unroll), pooled over", K, "folds\n")
+  print(table(factor(unlist(unroll_alpha_final), levels = sort(alpha_options))))
+  cat("\nFinal alpha chosen (flto), pooled over", K, "folds\n")
+  print(table(factor(unlist(flto_alpha_final), levels = sort(alpha_options))))
+  cat("\nFinal alpha chosen (noSIMD), pooled over", K, "folds\n")
+  print(table(factor(unlist(noSIMD_alpha_final), levels = sort(alpha_options))))
+  cat("\nFinal alpha chosen (production), pooled over", K, "folds\n")
+  print(table(factor(unlist(production_alpha_final), levels = sort(alpha_options))))
+  cat("\nFinal alpha chosen (fastmath), pooled over", K, "folds\n")
+  print(table(factor(unlist(fastmath_alpha_final), levels = sort(alpha_options))))
+})
+
+writeLines(log_lines, log_file)
+cat(log_lines, sep = "\n")
+cat("\nSaved log to", log_file, "\n")
+```

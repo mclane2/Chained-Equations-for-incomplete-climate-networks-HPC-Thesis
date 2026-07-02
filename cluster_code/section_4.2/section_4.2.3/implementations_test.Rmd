@@ -25,14 +25,14 @@ source("scripts/active_elastic_net_C_implementation/elastic_net_R_glue.R")
 lambda_options <- c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01)
 alpha_options  <- c(0.1, 0.35, 0.65, 0.9)
 
-
+data_root <- Sys.getenv("MET_EIREANN_DATA", unset = "../../../met_eireann_daily_data")
 
 # Load Met Eireann daily data and station geodata file
-years <- 2016
-files <- sprintf("../met_eireann_daily_data/daily_rainfall_%d.csv", years)
+years <- 2016:2025
+files    <- sprintf("%s/daily_rainfall_%d.csv", data_root, years)
 rain  <- do.call(rbind, lapply(files, read.csv))
 
-stations   <- read.csv("../met_eireann_daily_data/station_geodata.csv")
+stations <- read.csv(sprintf("%s/station_geodata.csv", data_root))
 
 # Attach coordinates to each daily observation
 missing_geo <- setdiff(unique(rain$stno), stations$stno)
@@ -252,7 +252,11 @@ results <- list(
     years       = years,
     n_stations  = length(keep),
     n_observed  = length(observed_idx),
-    run_time    = Sys.time()
+    run_time    = Sys.time(),
+    hostname       = Sys.info()[["nodename"]],
+    slurm_job_id   = Sys.getenv("SLURM_JOB_ID"),
+    slurm_nodelist = Sys.getenv("SLURM_NODELIST"),
+    r_version      = R.version.string
   ),
 
   # Timing in seconds summed over all K folds
