@@ -17,8 +17,6 @@ cutoff <- 0.50 # Set completeness cutoff percentage
 source("scripts/idw.R")
 source("scripts/ENCE_C.R")
 source("scripts/ENCE_elastic_net_C_implementation/elastic_net_R_glue.R")
-source("scripts/MICE_C.R")
-source("scripts/MICE_elastic_net_C_implementation/elastic_net_R_glue.R")
 source("scripts/PPCA.R")
 source("scripts/MissForest.R")
 source("scripts/MLR.R")
@@ -76,7 +74,6 @@ p_fixed_stations <- keep
 
 # Per-N mean timing (parallel to the old per-fold time_vec, now indexed by N_values)
 ence_time_mat <- matrix(NA_real_, length(N_values), n_reps)
-mice_time_mat <- matrix(NA_real_, length(N_values), n_reps)
 idw_time_mat  <- matrix(NA_real_, length(N_values), n_reps)
 ppca_time_mat <- matrix(NA_real_, length(N_values), n_reps)
 mf_time_mat   <- matrix(NA_real_, length(N_values), n_reps)
@@ -86,9 +83,6 @@ mlr_time_mat  <- matrix(NA_real_, length(N_values), n_reps)
 ence_true <- c()
 ence_pred <- c()
 ence_N <- c()
-mice_true <- c()
-mice_pred <- c()
-mice_N <- c()
 idw_true  <- c()
 idw_pred  <- c()
 idw_N  <- c()
@@ -136,20 +130,6 @@ for (ni in seq_along(N_values)) {
     ence_pred <- c(ence_pred, ence_imp$y[mask_idx])
     ence_N <- c(ence_N, rep(N, length(true_y)))
 
-    # Run mice
-    mice_time_mat[ni, r] <- system.time({
-      mice_imp <- MICE_DURR_C(df_sub, response = "y", m = 4,
-                       max_impute_cycles = 5, hyp_cycles = 2,
-                       init_method = "idw", max_EM_cycles = 8,
-                       nclusters = 1, nthreads = 16, outfile = NULL,
-                       lambda_options = lambda_options,
-                       alpha_options  = alpha_options,
-                       transformation = sqrt,
-                       reverse_transformation = function(x) x^2)
-    })["elapsed"]
-    mice_true <- c(mice_true, true_y)
-    mice_pred <- c(mice_pred, mice_imp$y[mask_idx])
-    mice_N <- c(mice_N, rep(N, length(true_y)))
 
     # Run IDW
     obs    <- df_sub[!is.na(df_sub$y), ]
@@ -200,7 +180,6 @@ for (ni in seq_along(N_values)) {
 
 # Per-N mean timing, parallel to the old per-fold *_time_vec
 ence_time_vec <- rowMeans(ence_time_mat)
-mice_time_vec <- rowMeans(mice_time_mat)
 idw_time_vec  <- rowMeans(idw_time_mat)
 ppca_time_vec <- rowMeans(ppca_time_mat)
 mf_time_vec   <- rowMeans(mf_time_mat)
@@ -208,7 +187,6 @@ mlr_time_vec  <- rowMeans(mlr_time_mat)
 
 # Total time across the whole sweep
 ence_time <- sum(ence_time_mat)
-mice_time <- sum(mice_time_mat)
 idw_time  <- sum(idw_time_mat)
 ppca_time <- sum(ppca_time_mat)
 mf_time   <- sum(mf_time_mat)
@@ -216,13 +194,12 @@ mlr_time  <- sum(mlr_time_mat)
 
 true_y <- ence_true   # same true values every method saw per rep
 ence_y <- ence_pred
-mice_y <- mice_pred
 idw_y  <- idw_pred
 ppca_y <- ppca_pred
 mf_y   <- mf_pred
 mlr_y  <- mlr_pred
 
-stopifnot(!anyNA(ence_y), !anyNA(mice_y), !anyNA(idw_y), !anyNA(ppca_y), !anyNA(mf_y))
+stopifnot(!anyNA(ence_y),!anyNA(idw_y), !anyNA(ppca_y), !anyNA(mf_y))
 ```
 
 ## Helper Functions
@@ -254,7 +231,6 @@ results <- list(
   meta = list(
     description = "Methods Comparison N scaling",
     cutoff      = cutoff,
-    seed        = 916,
     years       = years,
     n_stations  = length(keep),
     run_time    = Sys.time(),
@@ -266,13 +242,11 @@ results <- list(
 
   # Timing in seconds summed over all K folds
   ence_time = ence_time,
-  mice_time = mice_time,
   idw_time = idw_time,
   ppca_time = ppca_time,
   mf_time = mf_time,
   mlr_time = mlr_time,
   ence_time_vec = ence_time_vec,
-  mice_time_vec = mice_time_vec,
   idw_time_vec = idw_time_vec,
   ppca_time_vec = ppca_time_vec,
   mf_time_vec = mf_time_vec,
@@ -281,14 +255,12 @@ results <- list(
   # Held-out predictions for observed-vs-predicted scatterplots
   true_y = true_y,
   ence_y = ence_y,
-  mice_y = mice_y,
   idw_y = idw_y,
   ppca_y = ppca_y,
   mf_y = mf_y,
   mlr_y = mlr_y,
 
   ence_N = ence_N,
-  mice_N = mice_N,
   idw_N = idw_N,
   ppca_N = ppca_N,
   mf_N = mf_N,
@@ -304,7 +276,6 @@ cat("Saved results to", results_file, "\n")
 ```{r save_log}
 log_lines <- capture.output({
   report_metrics(true_y, ence_y, "ENCE", ence_time)
-  report_metrics(true_y, mice_y, "MICE", mice_time)
   report_metrics(true_y, idw_y, "IDW", idw_time)
   report_metrics(true_y, ppca_y, "PPCA", ppca_time)
   report_metrics(true_y, mf_y, "MissForest", mf_time)

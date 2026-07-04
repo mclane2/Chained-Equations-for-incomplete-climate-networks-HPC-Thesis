@@ -1,4 +1,4 @@
-# Filename: imputation_run.Rmd
+# Filename: imputation_run_mice.Rmd
 # Author: Marc Lane
 
 # Final Imputation Run - Computational Time Comparison
@@ -14,11 +14,10 @@ Load the Met Eireann daily data (not available in this Github repo), apply the s
 cutoff <- 0.50 # Set completeness cutoff percentage
 
 source("scripts/idw.R")
-source("scripts/ENCE_C.R")
-source("scripts/ENCE_elastic_net_C_implementation/elastic_net_R_glue.R")
-source("scripts/PPCA.R")
-source("scripts/MissForest.R")
-source("scripts/MLR.R")
+source("scripts/MICE_C.R")
+source("scripts/MICE_elastic_net_C_implementation/elastic_net_R_glue.R")
+
+nodelist <- system('scontrol show hostnames "$SLURM_JOB_NODELIST"', intern = TRUE)
 
 data_root <- Sys.getenv("MET_EIREANN_DATA", unset = "../../../met_eireann_daily_data")
 
@@ -60,8 +59,8 @@ rain   <- rain[rain$stno %in% keep, ]
 
 # Setup output file names
 tag          <- sprintf("cutoff%02d", round(cutoff * 100))
-results_file <- sprintf("section_4_3_Imputation_Run_%s.rds", tag)
-log_file     <- sprintf("section_4_3_Imputation_Run_%s.txt", tag)
+results_file <- sprintf("section_4_3_Imputation_Run_mice_%s.rds", tag)
+log_file     <- sprintf("section_4_3_Imputation_Run_mice_%s.txt", tag)
 ```
 
 # Imputation
@@ -72,21 +71,22 @@ Repeat 3 times to measure timing variance
 ```{r run, message=FALSE, results='hide'}
 n_reps <- 3
 
-# Per-rep timing (parallel to the per-fold time_vec in the other files, now indexed by rep)
-ence_time_vec <- numeric(n_reps)
-idw_time_vec  <- numeric(n_reps)
-ppca_time_vec <- numeric(n_reps)
-mf_time_vec   <- numeric(n_reps)
-mlr_time_vec  <- numeric(n_reps)
+# Per-rep timing
+mice_time_vec <- numeric(n_reps)
 
 # Number of genuinely-missing cells actually filled by each method per rep
-ence_n_imputed <- numeric(n_reps)
-idw_n_imputed  <- numeric(n_reps)
-ppca_n_imputed <- numeric(n_reps)
-mf_n_imputed   <- numeric(n_reps)
-mlr_n_imputed  <- numeric(n_reps)
+mice_n_imputed <- numeric(n_reps)
 
 missing_idx <- which(is.na(rain$y))
+
+# Pre-build cluster for each time function is called
+library(parallel)
+cl <- makeCluster(nodelist, outfile = sprintf("mice_cluster_%s.log", Sys.getenv("SLURM_JOB_ID")))
+clusterExport(cl, c("rmse", "durr_impute_cycle"))
+so_path <- normalizePath("scripts/MICE_elastic_net_C_implementation/MICE_impute.so")
+clusterExport(cl, "so_path")
+clusterEvalQ(cl, dyn.load(so_path))
+clusterEvalQ(cl, Sys.setenv(OPENBLAS_NUM_THREADS = "1", MKL_NUM_THREADS = "1"))
 
 for (r in seq_len(n_reps)) {
   cat("Rep", r, "of", n_reps, "\n")
@@ -94,66 +94,27 @@ for (r in seq_len(n_reps)) {
 
   df_miss <- rain
 
-  # Run ence
-  ence_time_vec[r] <- system.time({
-    ence_imp <- ENCE_C(df_miss, response = "y", max_cycles = 30,
-                init_method = "idw",
-                x_name = "east", y_name = "north", t_name = "t",
-                C = 15000,
-                transformation = sqrt,
-                reverse_transformation = function(x) x^2,
-                lambda_options = lambda_options,
-                alpha_options  = alpha_options
-                )
-  })["elapsed"]
-  ence_n_imputed[r] <- sum(!is.na(ence_imp$y[missing_idx]))
+    # Run mice
+    mice_time_vec[r] <- system.time({
+      mice_imp <- MICE_DURR_C(df_miss, response = "y", m = 10,
+                       max_impute_cycles = 5, hyp_cycles = 2,
+                       init_method = "idw", max_EM_cycles = 8,
+                       cl = cl, nthreads = 16, outfile = "",
+                       lambda_options = lambda_options,
+                       alpha_options  = alpha_options,
+                       transformation = sqrt,
+                       reverse_transformation = function(x) x^2)
+    })["elapsed"]
+    mice_n_imputed[r] <- sum(!is.na(mice_imp$y[missing_idx]))
 
 
-  # Run IDW
-  obs    <- df_miss[!is.na(df_miss$y), ]
-  target <- df_miss[is.na(df_miss$y), ]
-  idw_time_vec[r] <- system.time({
-    idw_imp <- IDW_ST(obs, target, response = "y",
-                  x_name = "east", y_name = "north", t_name = "t",
-                  C = 15000,
-                  transformation = sqrt,
-                  reverse_transformation = function(x) x^2)
-  })["elapsed"]
-  idw_n_imputed[r] <- sum(!is.na(idw_imp$y))
-
-
-  # Run PPCA
-  ppca_time_vec[r] <- system.time({
-    ppca_imp <- PPCA(df_miss, nPcs = 20, transformation = sqrt,
-                   reverse_transformation = function(x) x^2)
-  })["elapsed"]
-  ppca_n_imputed[r] <- sum(!is.na(ppca_imp$y[missing_idx]))
-
-
-  # Run MissForest
-  mf_time_vec[r] <- system.time({
-    mf_imp <- MissForest(df_miss, ntree = 100, mtry = 100,
-                     transformation = sqrt, reverse_transformation = function(x) x^2)
-  })["elapsed"]
-  mf_n_imputed[r] <- sum(!is.na(mf_imp$y[missing_idx]))
-
-
-  # Run MLR
-  obs    <- df_miss[!is.na(df_miss$y), ]
-  target <- df_miss[is.na(df_miss$y), ]
-  mlr_time_vec[r] <- system.time({
-    mlr_imp <- impute_MLR(obs, target, nn = 5, response = "y",
-                    transformation = sqrt, reverse_transformation = function(x) x^2)
-  })["elapsed"]
-  mlr_n_imputed[r] <- sum(!is.na(mlr_imp$y[missing_idx]))
 }
 
+stopCluster(cl)
+
 # Totals across the 3 reps
-ence_time <- sum(ence_time_vec)
-idw_time  <- sum(idw_time_vec)
-ppca_time <- sum(ppca_time_vec)
-mf_time   <- sum(mf_time_vec)
-mlr_time  <- sum(mlr_time_vec)
+mice_time <- sum(mice_time_vec)
+
 ```
 
 ## Helper Functions
@@ -173,7 +134,7 @@ report_timing <- function(method_name, elapsed_vec, n_missing, n_imputed_vec) {
 results <- list(
   # Run metadata, so this file identifies itself with no guessing
   meta = list(
-    description = "Final Imputation Run, computational time",
+    description = "MICE ONLY, Final Imputation Run, computational time",
     cutoff      = cutoff,
     n_reps      = n_reps,
     years       = years,
@@ -187,23 +148,10 @@ results <- list(
   ),
 
   # Timing in seconds summed over all 3 reps
-  ence_time = ence_time,
-  idw_time = idw_time,
-  ppca_time = ppca_time,
-  mf_time = mf_time,
-  mlr_time = mlr_time,
-  ence_time_vec = ence_time_vec,
-  idw_time_vec = idw_time_vec,
-  ppca_time_vec = ppca_time_vec,
-  mf_time_vec = mf_time_vec,
-  mlr_time_vec = mlr_time_vec,
+  mice_time = mice_time,
+  mice_time_vec = mice_time_vec,
 
-  # Coverage bookkeeping (fraction of genuinely-missing cells actually filled per rep)
-  ence_n_imputed = ence_n_imputed,
-  idw_n_imputed = idw_n_imputed,
-  ppca_n_imputed = ppca_n_imputed,
-  mf_n_imputed = mf_n_imputed,
-  mlr_n_imputed = mlr_n_imputed
+  mice_n_imputed = mice_n_imputed
 )
 
 saveRDS(results, results_file)
@@ -214,11 +162,7 @@ cat("Saved results to", results_file, "\n")
 
 ```{r save_log}
 log_lines <- capture.output({
-  report_timing("ENCE", ence_time_vec, length(missing_idx), ence_n_imputed)
-  report_timing("IDW", idw_time_vec, length(missing_idx), idw_n_imputed)
-  report_timing("PPCA", ppca_time_vec, length(missing_idx), ppca_n_imputed)
-  report_timing("MissForest", mf_time_vec, length(missing_idx), mf_n_imputed)
-  report_timing("MLR", mlr_time_vec, length(missing_idx), mlr_n_imputed)
+  report_timing("MICE", mice_time_vec, length(missing_idx), mice_n_imputed)
 })
 
 writeLines(log_lines, log_file)

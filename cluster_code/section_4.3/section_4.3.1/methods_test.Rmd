@@ -125,11 +125,12 @@ for (k in seq_len(K)) {
                 )
   })["elapsed"]
   ence_time <- ence_time + ence_time_vec[k]
+  cat("ENCE:  ", round(ence_time_vec[k], 1), "s   cumulative:", round(ence_time, 1), "s\n")
 
 
   # Run mice
   mice_time_vec[k] <- system.time({
-    mice_imp <- MICE_DURR_C(df_miss, response = "y", m = 4,
+    mice_imp <- MICE_DURR_C(df_miss, response = "y", m = 10,
                        max_impute_cycles = 5, hyp_cycles = 2,
                        init_method = "idw", max_EM_cycles = 8,
                        nclusters = 1, nthreads = 16, outfile = NULL,
@@ -139,6 +140,7 @@ for (k in seq_len(K)) {
                        reverse_transformation = function(x) x^2)
   })["elapsed"]
   mice_time <- mice_time + mice_time_vec[k]
+  cat("MICE:  ", round(mice_time_vec[k], 1), "s   cumulative:", round(mice_time, 1), "s\n")
 
 
   # Run IDW
@@ -152,7 +154,7 @@ for (k in seq_len(K)) {
                   reverse_transformation = function(x) x^2)
   })["elapsed"]
   idw_time <- idw_time + idw_time_vec[k]
-
+  cat("IDW:   ", round(idw_time_vec[k], 1), "s   cumulative:", round(idw_time, 1), "s\n")
 
   # Run PPCA
   ppca_time_vec[k] <- system.time({
@@ -160,6 +162,7 @@ for (k in seq_len(K)) {
                    reverse_transformation = function(x) x^2)
   })["elapsed"]
   ppca_time <- ppca_time + ppca_time_vec[k]
+  cat("PPCA:  ", round(ppca_time_vec[k], 1), "s   cumulative:", round(ppca_time, 1), "s\n")
 
 
   # Run MissForest
@@ -168,6 +171,7 @@ for (k in seq_len(K)) {
                      transformation = sqrt, reverse_transformation = function(x) x^2)
   })["elapsed"]
   mf_time <- mf_time + mf_time_vec[k]
+  cat("MissForest:    ", round(mf_time_vec[k], 1), "s   cumulative:", round(mf_time, 1), "s\n")
 
 
   # Run MLR
@@ -178,6 +182,7 @@ for (k in seq_len(K)) {
                     transformation = sqrt, reverse_transformation = function(x) x^2)
   })["elapsed"]
   mlr_time <- mlr_time + mlr_time_vec[k]
+  cat("MLR:   ", round(mlr_time_vec[k], 1), "s   cumulative:", round(mlr_time, 1), "s\n\n")
 
 
   # Fill in imputed values for this fold

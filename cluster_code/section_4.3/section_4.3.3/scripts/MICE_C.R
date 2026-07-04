@@ -25,6 +25,7 @@ MICE_DURR_C <- function(df, response = "y", m = 4,
                       spatial_id = "stno", time_id = "t",
                       EM_tol = 1,
                       nclusters = 1,
+                      cluster_spec = NULL, cl = NULL,
                       nfolds = 10L,
                       nthreads = 16,
                       outfile = "MICE_DURR_log.txt",
@@ -38,8 +39,10 @@ MICE_DURR_C <- function(df, response = "y", m = 4,
   # max_EM_cycles           -Maximum number of cycles when getting final values
   # init_method             -Method for getting starting imputed values
   # spatial_id, time_id     -Column names for locations and times
-  # EM_tol                  -Tolerance for convergence of final values 
+  # EM_tol                  -Tolerance for convergence of final values
   # nclusters               -Number of clusters if doing parallel computing
+  # cl                      -
+  # cluster_spec            -Character of hostnames for parallel MI across nodes
   # nfolds                  -Number of folds for CV
   # nthreads                -Number of threads per node parallel updates
   # outfile                 -Location to print outputs from clusters
@@ -100,30 +103,38 @@ MICE_DURR_C <- function(df, response = "y", m = 4,
   # Replicate wide table into m copies and attach a seed to each
   df_copies <- mapply(list, 222:(222+(m-1)), rep(list(df), m), 
                       SIMPLIFY = FALSE, USE.NAMES = FALSE)
-  
-  if(nclusters > 1){
+
+  owns_cluster <- FALSE
+  if(is.null(cl) && (nclusters > 1 || !is.null(cluster_spec))){
     require(parallel)
+    spec <- if(!is.null(cluster_spec)) cluster_spec else nclusters
 
     # Make clusters for parallel computing
-    cl <- makeCluster(nclusters, outfile = outfile)
+    cl <- makeCluster(spec, outfile = outfile)
+    owns_cluster <- TRUE
 
     # Import necessary functions to each cluster
     clusterExport(cl, c("rmse", "durr_impute_cycle"))
-    clusterEvalQ(cl, dyn.load("scripts/MICE_elastic_net_C_implementation/MICE_impute.so"))
+    so_path <- normalizePath("scripts/MICE_elastic_net_C_implementation/MICE_impute.so")
+    clusterExport(cl, "so_path")
+    clusterEvalQ(cl, dyn.load(so_path))
+    clusterEvalQ(cl, { Sys.setenv(OPENBLAS_NUM_THREADS = "1", MKL_NUM_THREADS = "1") })
+  }
 
+  if(!is.null(cl)){
     # Get parameters for every imputation model
     results <- parLapply(cl = cl, df_copies, MICE_get_params,
-                      missing_idx = missing_idx, max_cycles = max_impute_cycles,
-                      nfolds = nfolds, nthreads = nthreads, ...)
-    stopCluster(cl)
-  }
-  else{
-    # This provides the option to not do parallel computing
+                    missing_idx = missing_idx, max_cycles = max_impute_cycles,
+                    nfolds = nfolds, nthreads = nthreads, ...)
+    if(owns_cluster) stopCluster(cl)
+  } else {
     results <- lapply(df_copies, MICE_get_params,
-                     missing_idx = missing_idx,
-                     max_cycles = max_impute_cycles,
-                     nfolds = nfolds, nthreads = nthreads, ...)
+                   missing_idx = missing_idx,
+                   max_cycles = max_impute_cycles,
+                   nfolds = nfolds, nthreads = nthreads, ...)
   }
+
+
   # Pool the regression parameters together from each replicated data set
   params <- Reduce(`+`, lapply(results, `[[`, "params")) / m
   colnames(params) <- names(df)
