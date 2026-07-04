@@ -24,9 +24,9 @@ rm -f *.o *.so
 PKG_CFLAGS="-fopenmp -O3 -march=native -funroll-loops -flto" \
 PKG_LIBS="-fopenmp -flto" \
 R CMD SHLIB elastic_net_functions.c elastic_net.c ENCE_impute.c elastic_net_R_wrapper.c \
-  -o guided_ENCE_impute.so
+  -o static_ENCE_impute.so
 
 # Clean up .o files
 rm -f *.o
 
-echo "Built guided_ENCE_impute.so"
+echo "Built static_ENCE_impute.so"

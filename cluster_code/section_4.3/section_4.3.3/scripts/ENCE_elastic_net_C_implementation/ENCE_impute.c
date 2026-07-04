@@ -171,7 +171,7 @@ static int column_impute(const double *df_old, double *target_out, int n, int p,
             for (int v = 0; v < n_val;   ++v) yv[v] = y_obs[val_id[v]];
 
             for (int a = 0; a < n_alpha; ++a) {
-                if (elastic_net_path(xt, yt, n_train, p_cov, lambdas, n_lambda, alphas[a], thresh, maxit, beta_path, int_path) < 0) {
+                if (elastic_net_path(xt, yt, n_train, p_cov, lambdas, n_lambda, alphas[a], thresh, maxit, beta_path, int_path) != 0) {
                     free(cvm); free(fold_obs); free(train_id); free(val_id); free(xt); free(xv); free(yt); free(yv);
                     free(obs_rows); free(miss_rows); free(x_obs); free(x_miss); free(y_obs); free(beta);
                     free(beta_path); free(int_path);
@@ -204,7 +204,7 @@ static int column_impute(const double *df_old, double *target_out, int n, int p,
 
     /* Final fit on all observed data */
     double intercept;
-    if (elastic_net_path(x_obs, y_obs, n_obs, p_cov, &lambda, 1, alpha, thresh, maxit, beta, &intercept) < 0) {
+    if (elastic_net_path(x_obs, y_obs, n_obs, p_cov, &lambda, 1, alpha, thresh, maxit, beta, &intercept) != 0) {
         free(obs_rows); free(miss_rows); free(x_obs); free(x_miss); free(y_obs); free(beta);
         return 1;
     }
@@ -263,7 +263,7 @@ int ence_impute_cycle(const double *df_old, double *df_new, const int *missing_i
     }
     #endif
 
-    #pragma omp parallel for schedule(static) num_threads(nthreads)
+    #pragma omp parallel for schedule(dynamic) num_threads(nthreads)
     for (int col = 0; col < p; ++col) {
 
         if (column_impute(df_old, df_new + (size_t)col * n, n, p, col, missing_idx + (size_t)col * n, folds + (size_t)col * n,

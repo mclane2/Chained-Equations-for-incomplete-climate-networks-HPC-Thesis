@@ -1,0 +1,318 @@
+
+# Filename: N_scaling.Rmd
+# Author: Marc Lane
+
+# N scaling Methods Comparison Test
+
+Run this .Rmd to reproduce the results from the first part of Section 4.3 of my thesis
+
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo), apply the station completeness cutoff percentage
+
+```{r setup, message=FALSE}
+
+cutoff <- 0.50 # Set completeness cutoff percentage
+
+source("scripts/idw.R")
+source("scripts/ENCE_C.R")
+source("scripts/ENCE_elastic_net_C_implementation/elastic_net_R_glue.R")
+source("scripts/MICE_C.R")
+source("scripts/MICE_elastic_net_C_implementation/elastic_net_R_glue.R")
+source("scripts/PPCA.R")
+source("scripts/MissForest.R")
+source("scripts/MLR.R")
+
+data_root <- Sys.getenv("MET_EIREANN_DATA", unset = "../../../met_eireann_daily_data")
+
+lambda_options <- c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01)
+alpha_options  <- c(0.1, 0.35, 0.65, 0.9)
+
+# Load Met Eireann daily data and station geodata file
+years <- 2016:2025
+files    <- sprintf("%s/daily_rainfall_%d.csv", data_root, years)
+rain  <- do.call(rbind, lapply(files, read.csv))
+
+stations <- read.csv(sprintf("%s/station_geodata.csv", data_root))
+
+# Attach coordinates to each daily observation
+missing_geo <- setdiff(unique(rain$stno), stations$stno)
+if (length(missing_geo)) warning("No geodata for stno: ", paste(missing_geo, collapse=", "))
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Compute total number of days
+total_days <- length(unique(rain$t))
+# Adds a completeness column = observed days / total days.
+obs_per_station$completeness <- obs_per_station$n_obs / total_days
+
+# Apply the % cutoff
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Setup output file names
+tag          <- sprintf("cutoff%02d", round(cutoff * 100))
+results_file <- sprintf("section_4_3_N_scaling_%s.rds", tag)
+log_file     <- sprintf("section_4_3_N_scaling_%s.txt", tag)
+```
+
+# Imputation
+
+```{r run, message=FALSE, results='hide'}
+N_values <- c(30, 90, 180, 365, 730, 1800, 3600)
+n_reps   <- 3
+p_fixed_stations <- keep
+
+# Per-N mean timing (parallel to the old per-fold time_vec, now indexed by N_values)
+ence_time_mat <- matrix(NA_real_, length(N_values), n_reps)
+mice_time_mat <- matrix(NA_real_, length(N_values), n_reps)
+idw_time_mat  <- matrix(NA_real_, length(N_values), n_reps)
+ppca_time_mat <- matrix(NA_real_, length(N_values), n_reps)
+mf_time_mat   <- matrix(NA_real_, length(N_values), n_reps)
+mlr_time_mat  <- matrix(NA_real_, length(N_values), n_reps)
+
+# Pooled true/pred across every N and rep, for report_metrics and scatterplots
+ence_true <- c()
+ence_pred <- c()
+ence_N <- c()
+mice_true <- c()
+mice_pred <- c()
+mice_N <- c()
+idw_true  <- c()
+idw_pred  <- c()
+idw_N  <- c()
+ppca_true <- c()
+ppca_pred <- c()
+ppca_N <- c()
+mf_true   <- c()
+mf_pred   <- c()
+mf_N   <- c()
+mlr_true  <- c()
+mlr_pred  <- c()
+mlr_N  <- c()
+
+for (ni in seq_along(N_values)) {
+  N <- N_values[ni]
+
+  for (r in seq_len(n_reps)) {
+    set.seed(2000 + r)
+
+    sampled_t <- sort(sample(unique(rain$t), N))
+
+    # Unmasked truth, captured before df_sub gets masked
+    df_sub_truth <- rain[rain$stno %in% p_fixed_stations & rain$t %in% sampled_t, ]
+    df_sub <- df_sub_truth
+
+    obs_idx  <- which(!is.na(df_sub$y))
+    mask_idx <- sample(obs_idx, length(obs_idx) * 0.1)
+    df_sub$y[mask_idx] <- NA
+
+    true_y <- df_sub_truth$y[mask_idx]
+
+    # Run ence
+    ence_time_mat[ni, r] <- system.time({
+      ence_imp <- ENCE_C(df_sub, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = df_sub_truth$y, masked_idx = mask_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options)
+    })["elapsed"]
+    ence_true <- c(ence_true, true_y)
+    ence_pred <- c(ence_pred, ence_imp$y[mask_idx])
+    ence_N <- c(ence_N, rep(N, length(true_y)))
+
+    # Run mice
+    mice_time_mat[ni, r] <- system.time({
+      mice_imp <- MICE_DURR_C(df_sub, response = "y", m = 4,
+                       max_impute_cycles = 5, hyp_cycles = 2,
+                       init_method = "idw", max_EM_cycles = 8,
+                       nclusters = 1, nthreads = 16, outfile = NULL,
+                       lambda_options = lambda_options,
+                       alpha_options  = alpha_options,
+                       transformation = sqrt,
+                       reverse_transformation = function(x) x^2)
+    })["elapsed"]
+    mice_true <- c(mice_true, true_y)
+    mice_pred <- c(mice_pred, mice_imp$y[mask_idx])
+    mice_N <- c(mice_N, rep(N, length(true_y)))
+
+    # Run IDW
+    obs    <- df_sub[!is.na(df_sub$y), ]
+    target <- df_sub[mask_idx, ]
+    idw_time_mat[ni, r] <- system.time({
+      idw_imp <- IDW_ST(obs, target, response = "y",
+                  x_name = "east", y_name = "north", t_name = "t",
+                  C = 15000,
+                  transformation = sqrt,
+                  reverse_transformation = function(x) x^2)
+    })["elapsed"]
+    idw_true <- c(idw_true, true_y)
+    idw_pred <- c(idw_pred, idw_imp$y)
+    idw_N <- c(idw_N, rep(N, length(true_y)))
+
+    # Run PPCA
+    ppca_time_mat[ni, r] <- system.time({
+      ppca_imp <- PPCA(df_sub, nPcs = 20, transformation = sqrt,
+                   reverse_transformation = function(x) x^2)
+    })["elapsed"]
+    ppca_true <- c(ppca_true, true_y)
+    ppca_pred <- c(ppca_pred, ppca_imp$y[mask_idx])
+    ppca_N <- c(ppca_N, rep(N, length(true_y)))
+
+    # Run MissForest
+    mf_time_mat[ni, r] <- system.time({
+      mf_imp <- MissForest(df_sub, ntree = 100, mtry = 100,
+                     transformation = sqrt, reverse_transformation = function(x) x^2)
+    })["elapsed"]
+    mf_true <- c(mf_true, true_y)
+    mf_pred <- c(mf_pred, mf_imp$y[mask_idx])
+    mf_N <- c(mf_N, rep(N, length(true_y)))
+
+    # Run MLR
+    obs    <- df_sub[!is.na(df_sub$y), ]
+    target <- df_sub[is.na(df_sub$y), ]
+    mlr_time_mat[ni, r] <- system.time({
+      mlr_imp <- impute_MLR(obs, target, nn = 5, response = "y",
+                    transformation = sqrt, reverse_transformation = function(x) x^2)
+    })["elapsed"]
+    mlr_true <- c(mlr_true, true_y)
+    mlr_pred <- c(mlr_pred, mlr_imp$y[mask_idx])
+    mlr_N <- c(mlr_N, rep(N, length(true_y)))
+
+    cat("N =", N, "rep", r, "done\n")
+  }
+}
+
+# Per-N mean timing, parallel to the old per-fold *_time_vec
+ence_time_vec <- rowMeans(ence_time_mat)
+mice_time_vec <- rowMeans(mice_time_mat)
+idw_time_vec  <- rowMeans(idw_time_mat)
+ppca_time_vec <- rowMeans(ppca_time_mat)
+mf_time_vec   <- rowMeans(mf_time_mat)
+mlr_time_vec  <- rowMeans(mlr_time_mat)
+
+# Total time across the whole sweep
+ence_time <- sum(ence_time_mat)
+mice_time <- sum(mice_time_mat)
+idw_time  <- sum(idw_time_mat)
+ppca_time <- sum(ppca_time_mat)
+mf_time   <- sum(mf_time_mat)
+mlr_time  <- sum(mlr_time_mat)
+
+true_y <- ence_true   # same true values every method saw per rep
+ence_y <- ence_pred
+mice_y <- mice_pred
+idw_y  <- idw_pred
+ppca_y <- ppca_pred
+mf_y   <- mf_pred
+mlr_y  <- mlr_pred
+
+stopifnot(!anyNA(ence_y), !anyNA(mice_y), !anyNA(idw_y), !anyNA(ppca_y), !anyNA(mf_y))
+```
+
+## Helper Functions
+```{r helper functions, message=FALSE}
+report_metrics <- function(true, pred, method_name, elapsed, na.rm = FALSE) {
+  if (na.rm) {
+    covered <- !is.na(pred)
+    cat(method_name, "\n", sep = "")
+    cat("Coverage:", sum(covered), "of", length(pred),
+        sprintf("(%.1f%%)\n", 100 * mean(covered)))
+    true <- true[covered]; pred <- pred[covered]
+  } else {
+    cat(method_name, "\n", sep = "")
+  }
+  rmse <- sqrt(mean((pred - true)^2))
+  cat("Time:  ", round(elapsed, 2), "seconds\n")
+  cat("RMSE:  ", rmse, "\n")
+  cat("Bias %:", sum(pred - true) / sum(true) * 100, "\n")
+  cat("R2:    ", 1 - sum((pred - true)^2) / sum((true - mean(true))^2), "\n")
+  cat("SRMSE: ", rmse / mean(true), "\n\n")
+}
+```
+
+# Save Results
+
+```{r save_results}
+results <- list(
+  # Run metadata, so this file identifies itself with no guessing
+  meta = list(
+    description = "Methods Comparison N scaling",
+    cutoff      = cutoff,
+    seed        = 916,
+    years       = years,
+    n_stations  = length(keep),
+    run_time    = Sys.time(),
+    hostname       = Sys.info()[["nodename"]],
+    slurm_job_id   = Sys.getenv("SLURM_JOB_ID"),
+    slurm_nodelist = Sys.getenv("SLURM_NODELIST"),
+    r_version      = R.version.string
+  ),
+
+  # Timing in seconds summed over all K folds
+  ence_time = ence_time,
+  mice_time = mice_time,
+  idw_time = idw_time,
+  ppca_time = ppca_time,
+  mf_time = mf_time,
+  mlr_time = mlr_time,
+  ence_time_vec = ence_time_vec,
+  mice_time_vec = mice_time_vec,
+  idw_time_vec = idw_time_vec,
+  ppca_time_vec = ppca_time_vec,
+  mf_time_vec = mf_time_vec,
+  mlr_time_vec = mlr_time_vec,
+
+  # Held-out predictions for observed-vs-predicted scatterplots
+  true_y = true_y,
+  ence_y = ence_y,
+  mice_y = mice_y,
+  idw_y = idw_y,
+  ppca_y = ppca_y,
+  mf_y = mf_y,
+  mlr_y = mlr_y,
+
+  ence_N = ence_N,
+  mice_N = mice_N,
+  idw_N = idw_N,
+  ppca_N = ppca_N,
+  mf_N = mf_N,
+  mlr_N = mlr_N
+)
+
+saveRDS(results, results_file)
+cat("Saved results to", results_file, "\n")
+```
+
+# Save printed log
+
+```{r save_log}
+log_lines <- capture.output({
+  report_metrics(true_y, ence_y, "ENCE", ence_time)
+  report_metrics(true_y, mice_y, "MICE", mice_time)
+  report_metrics(true_y, idw_y, "IDW", idw_time)
+  report_metrics(true_y, ppca_y, "PPCA", ppca_time)
+  report_metrics(true_y, mf_y, "MissForest", mf_time)
+  report_metrics(true_y, mlr_y, "MLR", mlr_time, na.rm = TRUE)
+
+})
+
+writeLines(log_lines, log_file)
+cat(log_lines, sep = "\n")
+cat("\nSaved log to", log_file, "\n")
+```

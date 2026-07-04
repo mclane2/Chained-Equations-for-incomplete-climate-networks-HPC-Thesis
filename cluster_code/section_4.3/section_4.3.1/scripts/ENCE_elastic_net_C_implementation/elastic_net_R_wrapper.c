@@ -14,7 +14,7 @@
 #include "ENCE_impute.h"
 
 
-SEXP guided_ence_impute_cycle_R(SEXP df_old_sexp, SEXP missing_sexp, SEXP folds_sexp, SEXP lambdas_sexp, SEXP alphas_sexp,
+SEXP ence_impute_cycle_R(SEXP df_old_sexp, SEXP missing_sexp, SEXP folds_sexp, SEXP lambdas_sexp, SEXP alphas_sexp,
                          SEXP nfolds_sexp, SEXP thresh_sexp, SEXP maxit_sexp, SEXP nthreads_sexp, SEXP lambda_io_sexp, SEXP alpha_io_sexp)
 {
     int n = nrows(df_old_sexp);
@@ -30,7 +30,7 @@ SEXP guided_ence_impute_cycle_R(SEXP df_old_sexp, SEXP missing_sexp, SEXP folds_
     int failed = ence_impute_cycle(REAL(df_old_sexp), REAL(df_new_sexp), INTEGER(missing_sexp), INTEGER(folds_sexp), n, p, REAL(lambdas_sexp), LENGTH(lambdas_sexp),
                       REAL(alphas_sexp),  LENGTH(alphas_sexp), asInteger(nfolds_sexp), asReal(thresh_sexp), asInteger(maxit_sexp), 
                       asInteger(nthreads_sexp), REAL(lambda_out), REAL(alpha_out));
-    if (failed) Rf_error("Malloc error in ence_impute_cycle");
+    if (failed) Rf_error("Error in C implementation (Malloc error or maxit reached)");
 
     /* Pack into a named list: df, lambda, alpha  */
     SEXP result = PROTECT(allocVector(VECSXP, 3));

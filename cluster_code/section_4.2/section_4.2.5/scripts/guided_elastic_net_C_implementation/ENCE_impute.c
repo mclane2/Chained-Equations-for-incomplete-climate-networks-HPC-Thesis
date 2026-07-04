@@ -263,7 +263,7 @@ int ence_impute_cycle(const double *df_old, double *df_new, const int *missing_i
     }
     #endif
 
-    #pragma omp parallel for schedule(static) num_threads(nthreads)
+    #pragma omp parallel for schedule(guided) num_threads(nthreads)
     for (int col = 0; col < p; ++col) {
 
         if (column_impute(df_old, df_new + (size_t)col * n, n, p, col, missing_idx + (size_t)col * n, folds + (size_t)col * n,

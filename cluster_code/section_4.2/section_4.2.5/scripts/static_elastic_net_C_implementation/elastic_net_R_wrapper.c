@@ -14,7 +14,7 @@
 #include "ENCE_impute.h"
 
 
-SEXP guided_ence_impute_cycle_R(SEXP df_old_sexp, SEXP missing_sexp, SEXP folds_sexp, SEXP lambdas_sexp, SEXP alphas_sexp,
+SEXP static_ence_impute_cycle_R(SEXP df_old_sexp, SEXP missing_sexp, SEXP folds_sexp, SEXP lambdas_sexp, SEXP alphas_sexp,
                          SEXP nfolds_sexp, SEXP thresh_sexp, SEXP maxit_sexp, SEXP nthreads_sexp, SEXP lambda_io_sexp, SEXP alpha_io_sexp)
 {
     int n = nrows(df_old_sexp);
