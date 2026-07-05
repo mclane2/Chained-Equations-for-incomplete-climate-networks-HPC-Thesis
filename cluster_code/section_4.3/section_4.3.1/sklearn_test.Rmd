@@ -1,0 +1,191 @@
+
+# Filename: sklearn_test.Rmd
+# Author: Marc Lane
+
+# Methods Comparison Test
+
+Run this .Rmd to reproduce the results from the first part of Section 4.3 of my thesis
+
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo), apply the station completeness cutoff percentage
+
+```{r setup, message=FALSE}
+
+cutoff <- 0.50 # Set completeness cutoff percentage
+
+# Use reticulate to call sklearn from R
+python_path <- Sys.getenv("SKLEARN_PYTHON", unset = "/path/to/python3")
+reticulate::use_python(python_path, required = TRUE)
+reticulate::source_python("scripts/iterative_imputer.py")
+
+data_root <- Sys.getenv("MET_EIREANN_DATA", unset = "../../../met_eireann_daily_data")
+
+
+# Load Met Eireann daily data and station geodata file
+years <- 2016:2025
+files    <- sprintf("%s/daily_rainfall_%d.csv", data_root, years)
+rain  <- do.call(rbind, lapply(files, read.csv))
+
+stations <- read.csv(sprintf("%s/station_geodata.csv", data_root))
+
+# Attach coordinates to each daily observation
+missing_geo <- setdiff(unique(rain$stno), stations$stno)
+if (length(missing_geo)) warning("No geodata for stno: ", paste(missing_geo, collapse=", "))
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Compute total number of days
+total_days <- length(unique(rain$t))
+# Adds a completeness column = observed days / total days.
+obs_per_station$completeness <- obs_per_station$n_obs / total_days
+
+# Apply the % cutoff
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Setup output file names
+tag          <- sprintf("cutoff%02d", round(cutoff * 100))
+results_file <- sprintf("section_4_3_sklearn_%s.rds", tag)
+log_file     <- sprintf("section_4_3_sklearn_%s.txt", tag)
+
+```
+
+# Imputation
+ 
+Split data into 10 folds, mask observed entries and impute for each fold separately
+```{r run, message=FALSE, results='hide'}
+# Split the observed cells into K-folds
+set.seed(916)
+K <- 10
+# Indexes of observed cells
+observed_idx <- which(!is.na(rain$y))
+# Shuffled repeating pattern 1,2,...,K as long as the number of observed cells
+fold_id      <- sample(rep(1:K, length.out = length(observed_idx)))
+# Groups observed_idx into its fold
+folds        <- split(observed_idx, fold_id)
+
+# sklearn matrix setup
+stno_levels <- sort(unique(rain$stno))
+t_levels    <- sort(unique(rain$t))
+row_idx_full <- match(rain$t, t_levels)
+col_idx_full <- match(rain$stno, stno_levels)
+
+# Initialising variables
+sk_pred     <- rep(NA_real_, nrow(rain))
+sk_time     <- 0
+sk_time_vec <- numeric(K)
+
+# Loop through each fold
+for (k in seq_len(K)) {
+  cat("Fold", k, "of", K, "\n")
+  
+  test_idx <- folds[[k]]
+  
+  # Hide the masked data for this fold
+  df_miss <- rain
+  df_miss$y[test_idx] <- NA
+
+  # Prepare matrix for sklearn function
+  X_matrix <- matrix(NA_real_, nrow = length(t_levels), ncol = length(stno_levels))
+  row_idx  <- match(df_miss$t, t_levels)
+  col_idx  <- match(df_miss$stno, stno_levels)
+  X_matrix[cbind(row_idx, col_idx)] <- df_miss$y
+  
+  # run iterative imputer
+  sk_time_vec[k] <- system.time({
+    X_imputed <- run_iterative_imputer(X_matrix, n_nearest_features = 50L,
+                                        max_iter = 10L, random_state = 916L)
+   })["elapsed"]
+  sk_time <- sk_time + sk_time_vec[k]
+
+  cat("sklearn:", round(sk_time_vec[k], 1), "s   cumulative:", round(sk_time, 1), "s\n\n")
+
+  sk_pred[test_idx] <- X_imputed[cbind(row_idx_full, col_idx_full)][test_idx]
+}
+
+true_y <- rain$y[observed_idx]
+sk_y   <- sk_pred[observed_idx]
+
+# Check every held-out cell got a prediction
+stopifnot(!anyNA(sk_y))
+```
+
+## Helper Functions
+```{r helper functions, message=FALSE}
+report_metrics <- function(true, pred, method_name, elapsed, na.rm = FALSE) {
+  if (na.rm) {
+    covered <- !is.na(pred)
+    cat(method_name, "\n", sep = "")
+    cat("Coverage:", sum(covered), "of", length(pred),
+        sprintf("(%.1f%%)\n", 100 * mean(covered)))
+    true <- true[covered]; pred <- pred[covered]
+  } else {
+    cat(method_name, "\n", sep = "")
+  }
+  rmse <- sqrt(mean((pred - true)^2))
+  cat("Time:  ", round(elapsed, 2), "seconds\n")
+  cat("RMSE:  ", rmse, "\n")
+  cat("Bias %:", sum(pred - true) / sum(true) * 100, "\n")
+  cat("R2:    ", 1 - sum((pred - true)^2) / sum((true - mean(true))^2), "\n")
+  cat("SRMSE: ", rmse / mean(true), "\n\n")
+}
+```
+
+# Save Results
+
+```{r save_results}
+results <- list(
+  # Run metadata, so this file identifies itself with no guessing
+  meta = list(
+    description = "SKlearn only, Methods Comparison",
+    cutoff      = cutoff,
+    K           = K,
+    seed        = 916,
+    years       = years,
+    n_stations  = length(keep),
+    n_observed  = length(observed_idx),
+    run_time    = Sys.time(),
+    hostname       = Sys.info()[["nodename"]],
+    slurm_job_id   = Sys.getenv("SLURM_JOB_ID"),
+    slurm_nodelist = Sys.getenv("SLURM_NODELIST"),
+    r_version      = R.version.string
+  ),
+  sk_time     = sk_time,
+  sk_time_vec = sk_time_vec,
+  true_y = true_y,
+  sk_y   = sk_y,
+  stno  = rain$stno[observed_idx],
+  t     = rain$t[observed_idx],
+  east  = rain$east[observed_idx],
+  north = rain$north[observed_idx],
+  fold  = fold_id
+)
+
+saveRDS(results, results_file)
+cat("Saved results to", results_file, "\n")
+```
+
+# Save printed log
+
+```{r save_log}
+log_lines <- capture.output({
+  report_metrics(true_y, sk_y, "IterativeImputer", sk_time)
+
+})
+
+writeLines(log_lines, log_file)
+cat(log_lines, sep = "\n")
+cat("\nSaved log to", log_file, "\n")
+```
