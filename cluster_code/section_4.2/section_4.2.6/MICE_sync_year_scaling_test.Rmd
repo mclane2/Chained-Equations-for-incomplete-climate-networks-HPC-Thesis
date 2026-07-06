@@ -1,0 +1,234 @@
+# Filename: MICE_sync_year_scaling_test.Rmd
+# Author: Marc Lane
+
+# MICE DURR - R Parallel (Synchronous) Year Scaling Test
+
+Run this .Rmd to reproduce the R-parallel (synchronous) results for Section 4.2.6
+of my thesis for the MICE algorithm
+
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo), apply the
+station completeness cutoff percentage
+```{r setup, message=FALSE}
+
+cutoff <- 0.50 # Set completeness cutoff percentage
+
+source("scripts/idw.R")
+source("scripts/MICE_synchronous_parallel.R")
+
+data_root <- Sys.getenv("MET_EIREANN_DATA", unset = "../../../met_eireann_daily_data")
+
+lambda_options <- c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01)
+alpha_options  <- c(0.1, 0.35, 0.65, 0.9)
+
+# Load Met Eireann daily data and station geodata file
+years_full <- 2016:2025
+files    <- sprintf("%s/daily_rainfall_%d.csv", data_root, years_full)
+
+# Read each year's file separately and tag rows with their calendar year,
+# so later we can pull out arbitrary year subsets from a single loaded object
+rain_list <- lapply(seq_along(files), function(i) {
+  df <- read.csv(files[i])
+  df$year <- years_full[i]
+  df
+})
+rain <- do.call(rbind, rain_list)
+
+stations <- read.csv(sprintf("%s/station_geodata.csv", data_root))
+
+# Attach coordinates to each daily observation
+missing_geo <- setdiff(unique(rain$stno), stations$stno)
+if (length(missing_geo)) warning("No geodata for stno: ", paste(missing_geo, collapse=", "))
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, year, y
+rain <- rain[, c("stno", "east", "north", "t", "year", "rain")]
+names(rain)[6] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station using the FULL 10 years. This means the set
+# of stations kept (`keep`) is identical across every year-count in the sweep -
+# only the time window changes, not the station panel.
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)
+names(obs_per_station) <- c("stno", "n_obs")
+total_days <- length(unique(rain$t))
+obs_per_station$completeness <- obs_per_station$n_obs / total_days
+
+# Apply the % cutoff
+keep <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+
+# Setup output file names
+tag          <- sprintf("cutoff%02d", round(cutoff * 100))
+results_file <- sprintf("section_4_2_6_MICE_sync_year_scaling_%s.rds", tag)
+log_file     <- sprintf("section_4_2_6_MICE_sync_year_scaling_%s.txt", tag)
+```
+
+# Imputation
+
+```{r run, message=FALSE, results='hide'}
+year_values <- c(1, 2, 4, 6, 8, 10)
+n_reps      <- 3
+m           <- 1
+p_fixed_stations <- keep
+
+# Per-year-count mean timing, parallel to the old per-fold time_vec
+sync_time_mat <- matrix(NA_real_, length(year_values), n_reps)
+
+# Pooled true/pred across every year count and rep, for report_metrics and scatterplots
+sync_true  <- c()
+sync_pred  <- c()
+sync_years <- c()  # number of years used, tagged per held-out cell, for plotting
+
+# Record which calendar years were actually sampled each (year count, rep), for
+# reproducibility / debugging - e.g. checking whether an unlucky sparse year
+# distorted a particular rep's timing or accuracy
+sampled_years_record <- vector("list", length(year_values))
+
+# Record which stations get dropped for insufficient observations within a
+# given sampled window (see guard below) - kept for diagnostics/reproducibility
+dropped_stations_record <- vector("list", length(year_values))
+
+for (ni in seq_along(year_values)) {
+  Y <- year_values[ni]
+  sampled_years_record[[ni]] <- vector("list", n_reps)
+  dropped_stations_record[[ni]] <- vector("list", n_reps)
+
+  for (r in seq_len(n_reps)) {
+    set.seed(2000 + r)
+
+    sampled_years <- sort(sample(years_full, Y))
+    sampled_years_record[[ni]][[r]] <- sampled_years
+
+    # Unmasked truth, captured before df_sub gets masked
+    df_sub_truth <- rain[rain$stno %in% p_fixed_stations & rain$year %in% sampled_years, ]
+
+    # Guard against stations with too few observations in THIS particular
+    # sampled window: `keep`/p_fixed_stations was computed from 50% completeness
+    # over the FULL 10 years, so a station can pass that cutoff overall while
+    # having zero (or near-zero) observations in a specific 1-2 year sample -
+    # e.g. a station installed partway through the record. A single all-NA (or
+    # near all-NA) column poisons the correlation-based predictor selection for
+    # every other column too. Tune min_obs_per_station against whatever overlap
+    # the correlation step in MICE_impute.c actually needs to be numerically stable.
+    min_obs_per_station <- 30
+    obs_counts <- tapply(!is.na(df_sub_truth$y), df_sub_truth$stno, sum)
+    sparse_stations <- as.numeric(names(obs_counts)[obs_counts < min_obs_per_station])
+    if (length(sparse_stations)) {
+      df_sub_truth <- df_sub_truth[!(df_sub_truth$stno %in% sparse_stations), ]
+      cat("  dropped", length(sparse_stations), "station(s) with <", min_obs_per_station,
+          "obs in this window:", paste(sparse_stations, collapse = ","), "\n")
+    }
+    dropped_stations_record[[ni]][[r]] <- sparse_stations
+
+    df_sub <- df_sub_truth
+
+    obs_idx  <- which(!is.na(df_sub$y))
+    mask_idx <- sample(obs_idx, length(obs_idx) * 0.1)
+    df_sub$y[mask_idx] <- NA
+
+    true_y <- df_sub_truth$y[mask_idx]
+
+    # Run synchronous MICE
+    sync_time_mat[ni, r] <- system.time({
+      sync_imp <- MICE_DURR_sync_par(df_sub, response = "y", m = m,
+                                   max_impute_cycles = 5, hyp_cycles = 2,
+                                   init_method = "idw", max_EM_cycles = 8,
+                                   nclusters = 1, outfile = "/dev/null",
+                                   n_workers = 16,
+                                   lambda_options = lambda_options,
+                                   alpha_options  = alpha_options,
+                                   transformation = sqrt,
+                                   reverse_transformation = function(x) x^2)
+    })["elapsed"]
+
+    sync_true  <- c(sync_true, true_y)
+    sync_pred  <- c(sync_pred, sync_imp$y[mask_idx])
+    sync_years <- c(sync_years, rep(Y, length(true_y)))
+
+    cat("Years =", Y, "(", paste(sampled_years, collapse=","), ") rep", r, "done\n")
+  }
+}
+
+# Per-year-count mean timing, parallel to the old per-fold *_time_vec
+sync_time_vec <- rowMeans(sync_time_mat)
+
+# Total time across the whole sweep
+sync_time <- sum(sync_time_mat)
+
+true_y <- sync_true
+sync_y <- sync_pred
+
+stopifnot(!anyNA(sync_y))
+```
+
+## Helper Functions
+```{r helper functions, message=FALSE}
+report_metrics <- function(true, pred, method_name, elapsed) {
+  rmse <- sqrt(mean((pred - true)^2))
+  cat(method_name, "\n", sep = "")
+  cat("Time:  ", round(elapsed, 2), "seconds\n")
+  cat("RMSE:  ", rmse, "\n")
+  cat("Bias %:", sum(pred - true) / sum(true) * 100, "\n")
+  cat("R2:    ", 1 - sum((pred - true)^2) / sum((true - mean(true))^2), "\n")
+  cat("SRMSE: ", rmse / mean(true), "\n\n")
+}
+```
+
+# Save Results
+
+```{r save_results}
+results <- list(
+  # Run metadata, so this file identifies itself with no guessing
+  meta = list(
+    description = "MICE R-parallel (synchronous) year scaling, Section 4.2.6",
+    cutoff      = cutoff,
+    years_full  = years_full,
+    year_values = year_values,
+    n_reps      = n_reps,
+    m           = m,
+    n_stations  = length(keep),
+    run_time    = Sys.time(),
+    hostname       = Sys.info()[["nodename"]],
+    slurm_job_id   = Sys.getenv("SLURM_JOB_ID"),
+    slurm_nodelist = Sys.getenv("SLURM_NODELIST"),
+    r_version      = R.version.string
+  ),
+
+  # Timing in seconds
+  sync_time     = sync_time,
+  sync_time_vec = sync_time_vec,
+  sync_time_mat = sync_time_mat,
+
+  # Held-out predictions for observed-vs-predicted scatterplots
+  true_y = true_y,
+  sync_y = sync_y,
+  sync_years = sync_years,
+
+  # Which calendar years were sampled per (year count, rep)
+  sampled_years_record = sampled_years_record,
+
+  # Which stations were dropped for insufficient observations per (year count, rep)
+  dropped_stations_record = dropped_stations_record
+)
+
+saveRDS(results, results_file)
+cat("Saved results to", results_file, "\n")
+```
+
+# Save printed log
+
+```{r save_log}
+log_lines <- capture.output({
+  report_metrics(true_y, sync_y, "Synchronous (R parallel)", sync_time)
+
+  cat("Mean elapsed time by year count:\n")
+  print(setNames(round(sync_time_vec, 2), year_values))
+})
+
+writeLines(log_lines, log_file)
+cat(log_lines, sep = "\n")
+cat("\nSaved log to", log_file, "\n")
+```
