@@ -1,0 +1,180 @@
+# Filename: section_4_1_missingness_sweep.Rmd
+# Author: Marc Lane
+
+# ENCE and MICE - Serial vs Synchronous Metrics Across Missingness/Cutoff Levels
+
+Reads whichever `section_4_1_ENCE_sync_vs_serial_cutoffXX.rds` and
+`section_4_1_MICE_sync_vs_serial_cutoffXX.rds` files exist in the working directory
+and reports RMSE / Bias% / R2 / SRMSE / timing / speedup for each. No internal
+convergence RMSE plots and no hyperparameter agreement tables (see
+section_4_1_plots.Rmd for those) - scatterplots are kept in as a sanity check.
+
+Knit this at any point while cutoff30 / cutoff70 / cutoff90 jobs are still on the
+cluster; missing files are reported and skipped rather than erroring out.
+
+## Setup
+
+```{r setup, message=FALSE}
+# Cutoff tags (%) to sweep over - matches round(cutoff * 100) from
+# synchronous_vs_serial.Rmd / synchronous_vs_serial_mice.Rmd.
+# Edit this if the actual cutoff values used for the running jobs differ.
+cutoffs <- c(30, 50, 70, 90)
+
+ence_files <- sprintf("section_4_1_ENCE_sync_vs_serial_cutoff%02d.rds", cutoffs)
+mice_files <- sprintf("section_4_1_MICE_sync_vs_serial_cutoff%02d.rds", cutoffs)
+names(ence_files) <- cutoffs
+names(mice_files) <- cutoffs
+```
+
+## Helper Functions
+
+```{r helper_functions, message=FALSE}
+load_if_exists <- function(path) {
+  if (file.exists(path)) readRDS(path) else NULL
+}
+
+compute_metrics <- function(true, pred) {
+  rmse     <- sqrt(mean((pred - true)^2))
+  bias_pct <- sum(pred - true) / sum(true) * 100
+  r2       <- 1 - sum((pred - true)^2) / sum((true - mean(true))^2)
+  srmse    <- rmse / mean(true)
+  c(RMSE = rmse, Bias_pct = bias_pct, R2 = r2, SRMSE = srmse)
+}
+
+plot_obs_pred <- function(observed, predicted, method_name = "Method") {
+  op <- par(pty = "s")
+  on.exit(par(op))
+  lims <- range(c(observed, predicted), na.rm = TRUE)
+  plot(observed, predicted,
+       xlim = lims, ylim = lims,
+       xlab = "Observed", ylab = "Predicted",
+       main = paste(method_name, ": Observed vs Predicted"),
+       pch = 16, cex = 0.5, col = rgb(0, 0, 0, 0.12))
+  abline(0, 1, col = "red", lwd = 2, lty = 2)
+  grid()
+}
+```
+
+## Load available data
+
+```{r load_data, results='hold'}
+ence_data <- lapply(ence_files, load_if_exists)
+mice_data <- lapply(mice_files, load_if_exists)
+
+cat("ENCE files:\n")
+for (i in seq_along(ence_files)) {
+  status <- if (is.null(ence_data[[i]])) {
+    "MISSING"
+  } else {
+    m <- ence_data[[i]]$meta
+    sprintf("OK  (meta cutoff=%.2f, K=%d, stations=%d)", m$cutoff, m$K, m$n_stations)
+  }
+  cat(sprintf("  cutoff%02d  %-45s  %s\n", cutoffs[i], ence_files[i], status))
+}
+
+cat("\nMICE files:\n")
+for (i in seq_along(mice_files)) {
+  status <- if (is.null(mice_data[[i]])) {
+    "MISSING"
+  } else {
+    m <- mice_data[[i]]$meta
+    sprintf("OK  (meta cutoff=%.2f, K=%d, stations=%d)", m$cutoff, m$K, m$n_stations)
+  }
+  cat(sprintf("  cutoff%02d  %-45s  %s\n", cutoffs[i], mice_files[i], status))
+}
+```
+
+## Build summary table
+
+```{r build_summary, message=FALSE}
+build_summary <- function(data_list, cutoffs, engine_name) {
+  rows <- list()
+  for (i in seq_along(data_list)) {
+    d <- data_list[[i]]
+    if (is.null(d)) next
+
+    serial_m <- compute_metrics(d$true_y, d$serial_y)
+    sync_m   <- compute_metrics(d$true_y, d$sync_y)
+    speedup  <- d$serial_time / d$sync_time
+
+    rows[[length(rows) + 1]] <- data.frame(
+      Engine   = engine_name,
+      Cutoff   = cutoffs[i],
+      Update   = "Serial",
+      Time_s   = round(d$serial_time, 2),
+      RMSE     = round(unname(serial_m["RMSE"]), 4),
+      Bias_pct = round(unname(serial_m["Bias_pct"]), 3),
+      R2       = round(unname(serial_m["R2"]), 4),
+      SRMSE    = round(unname(serial_m["SRMSE"]), 4),
+      Speedup  = NA_real_
+    )
+    rows[[length(rows) + 1]] <- data.frame(
+      Engine   = engine_name,
+      Cutoff   = cutoffs[i],
+      Update   = "Synchronous",
+      Time_s   = round(d$sync_time, 2),
+      RMSE     = round(unname(sync_m["RMSE"]), 4),
+      Bias_pct = round(unname(sync_m["Bias_pct"]), 3),
+      R2       = round(unname(sync_m["R2"]), 4),
+      SRMSE    = round(unname(sync_m["SRMSE"]), 4),
+      Speedup  = round(speedup, 2)
+    )
+  }
+  if (length(rows) == 0) return(NULL)
+  do.call(rbind, rows)
+}
+
+ence_summary <- build_summary(ence_data, cutoffs, "ENCE")
+mice_summary <- build_summary(mice_data, cutoffs, "MICE")
+```
+
+## ENCE metrics across cutoffs
+
+```{r ence_summary_print, results='hold'}
+if (is.null(ence_summary)) {
+  cat("No ENCE .rds files found yet.\n")
+} else {
+  print(ence_summary, row.names = FALSE)
+}
+```
+
+## MICE metrics across cutoffs
+
+```{r mice_summary_print, results='hold'}
+if (is.null(mice_summary)) {
+  cat("No MICE .rds files found yet.\n")
+} else {
+  print(mice_summary, row.names = FALSE)
+}
+```
+
+## Scatterplots (sanity check)
+
+```{r ence_scatterplots, results='hold'}
+for (i in seq_along(ence_data)) {
+  d <- ence_data[[i]]
+  if (is.null(d)) next
+  plot_obs_pred(d$true_y, d$serial_y, sprintf("ENCE Serial - cutoff %d%%", cutoffs[i]))
+  plot_obs_pred(d$true_y, d$sync_y,   sprintf("ENCE Synchronous - cutoff %d%%", cutoffs[i]))
+}
+```
+
+```{r mice_scatterplots, results='hold'}
+for (i in seq_along(mice_data)) {
+  d <- mice_data[[i]]
+  if (is.null(d)) next
+  plot_obs_pred(d$true_y, d$serial_y, sprintf("MICE Serial - cutoff %d%%", cutoffs[i]))
+  plot_obs_pred(d$true_y, d$sync_y,   sprintf("MICE Synchronous - cutoff %d%%", cutoffs[i]))
+}
+```
+
+## Save combined summary (for LaTeX table later)
+
+```{r save_summary}
+combined <- rbind(ence_summary, mice_summary)
+if (!is.null(combined)) {
+  saveRDS(combined, "section_4_1_missingness_sweep_summary.rds")
+  write.csv(combined, "section_4_1_missingness_sweep_summary.csv", row.names = FALSE)
+  cat("Saved summary table with", nrow(combined), "rows.\n")
+}
+```

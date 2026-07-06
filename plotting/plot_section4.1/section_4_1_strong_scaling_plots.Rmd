@@ -187,3 +187,12 @@ grid()
 legend("topleft", legend = c("ENCE", "MICE", "Ideal"),
        col = c(col_ence, col_mice, "grey40"), pch = c(15, 17, NA), lty = c(1, 1, 2))
 ```
+```{r efficiency plot, results='hold'}
+plot(core_grid, ENCE_efficiency, type = "b", col = col_ence, pch = 15,
+     ylim = c(0, 1), xlab = "Cores", ylab = "Efficiency (speedup / cores)",
+     main = "Strong Scaling Efficiency: ENCE vs MICE")
+lines(core_grid, MICE_efficiency, type = "b", col = col_mice, pch = 17)
+abline(h = 1, col = "grey40", lty = 2)
+grid()
+legend("bottomleft", legend = c("ENCE", "MICE"), col = c(col_ence, col_mice), pch = c(15, 17), lty = 1)
+```

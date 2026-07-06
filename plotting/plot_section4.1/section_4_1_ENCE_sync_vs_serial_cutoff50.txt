@@ -1,0 +1,40 @@
+Serial
+Time:   41893.99 seconds
+RMSE:   2.099437 
+Bias %: -4.689873 
+R2:     0.8858709 
+SRMSE:  0.5773201 
+
+Synchronous
+Time:   6507.99 seconds
+RMSE:   2.101172 
+Bias %: -4.778269 
+R2:     0.8856822 
+SRMSE:  0.5777972 
+
+
+Final lambda chosen (serial), pooled over 10 folds
+
+ 0.01 0.025  0.05   0.1  0.15   0.2 
+ 3952   386    71     1     0     0 
+
+Final lambda chosen (sync), pooled over 10 folds
+
+ 0.01 0.025  0.05   0.1  0.15   0.2 
+ 3830   425   152     3     0     0 
+
+Final alpha chosen (serial), pooled over 10 folds
+
+ 0.1 0.35 0.65  0.9 
+ 494 2693  865  358 
+
+Final alpha chosen (sync), pooled over 10 folds
+
+ 0.1 0.35 0.65  0.9 
+ 531 2397 1031  451 
+Lambda agreement, pooled over 10 folds
+   4040 / 4410 
+   91.6 %
+Alpha agreement, pooled over 10 folds
+   3471 / 4410 
+   78.7 %

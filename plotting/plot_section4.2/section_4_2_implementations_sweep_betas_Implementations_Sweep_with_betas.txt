@@ -1,0 +1,18 @@
+Naive
+Time:   5081.57 seconds
+RMSE:   2.183308 
+Bias %: -4.681562 
+R2:     0.8762619 
+
+Warmstart
+Time:   1198.53 seconds
+RMSE:   2.182221 
+Bias %: -4.648802 
+R2:     0.8763851 
+
+Active
+Time:   539.91 seconds
+RMSE:   2.177711 
+Bias %: -4.632121 
+R2:     0.8768955 
+

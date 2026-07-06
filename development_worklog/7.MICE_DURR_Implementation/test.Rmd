@@ -13,8 +13,8 @@ source("MICE_elastic_net_C_implementation/elastic_net_R_glue.R")
 source("elastic_net_C_implementation/elastic_net_R_glue.R")
 
 # Load Met Eireann daily data and station geodata file
-rain     <- read.csv("../met_eireann_daily_data/daily_rainfall_2016.csv")
-stations <- read.csv("../met_eireann_daily_data/station_geodata.csv")
+rain     <- read.csv("../../met_eireann_daily_data/daily_rainfall_2016.csv")
+stations <- read.csv("../../met_eireann_daily_data/station_geodata.csv")
 
 # Attach coordinates to each daily observation
 rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")

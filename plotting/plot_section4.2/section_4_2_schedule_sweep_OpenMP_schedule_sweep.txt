@@ -1,0 +1,51 @@
+dynamic
+Time:   6986.33 seconds
+RMSE:   2.100832 
+Bias %: -4.78388 
+R2:     0.8857192 
+SRMSE:  0.5777037 
+
+static
+Time:   7916.16 seconds
+RMSE:   2.100832 
+Bias %: -4.78388 
+R2:     0.8857192 
+SRMSE:  0.5777037 
+
+guided
+Time:   7584.25 seconds
+RMSE:   2.100832 
+Bias %: -4.78388 
+R2:     0.8857192 
+SRMSE:  0.5777037 
+
+
+Final lambda chosen (dynamic), pooled over 10 folds
+
+ 0.01 0.025  0.05   0.1  0.15   0.2 
+ 3802   427   180     1     0     0 
+
+Final lambda chosen (static), pooled over 10 folds
+
+ 0.01 0.025  0.05   0.1  0.15   0.2 
+ 3802   427   180     1     0     0 
+
+Final lambda chosen (guided), pooled over 10 folds
+
+ 0.01 0.025  0.05   0.1  0.15   0.2 
+ 3802   427   180     1     0     0 
+
+Final alpha chosen (dynamic), pooled over 10 folds
+
+ 0.1 0.35 0.65  0.9 
+ 528 2368 1077  437 
+
+Final alpha chosen (static), pooled over 10 folds
+
+ 0.1 0.35 0.65  0.9 
+ 528 2368 1077  437 
+
+Final alpha chosen (guided), pooled over 10 folds
+
+ 0.1 0.35 0.65  0.9 
+ 528 2368 1077  437 

@@ -1,0 +1,10 @@
+C implementation
+Time:   5909.75 seconds
+RMSE:   2.122147 
+Bias %: -5.039989 
+R2:     0.8828015 
+SRMSE:  0.5828802 
+
+Mean elapsed time by year count:
+     1      2      4      6      8     10 
+ 63.61 120.26 212.17 339.16 520.70 714.02 

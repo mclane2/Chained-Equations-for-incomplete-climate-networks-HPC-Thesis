@@ -15,4 +15,4 @@ EOF
 
 # Double checking Met Eireann data is not added to github
 met_eireann_daily_data/
-*.csv
+*.csv*.rds
