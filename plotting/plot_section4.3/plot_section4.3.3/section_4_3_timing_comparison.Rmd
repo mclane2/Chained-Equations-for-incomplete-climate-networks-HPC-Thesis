@@ -5,11 +5,6 @@
 
 Reads the three result files produced by imputation_run.Rmd, imputation_run_mice.Rmd,
 and imputation_run_sklearn.Rmd (full 10-year daily imputation, no masking, 3 reps each).
-
-NOTE: R-parallel synchronous ENCE and MICE-DURR are still to be added to this run.
-Once those .rds files exist, add two more rows to `summary_df` below (marked with a
-comment) and re-knit.
-
 ## Setup
 
 ```{r setup, message=FALSE}
@@ -118,6 +113,7 @@ summary_df <- data.frame(
 #   sd_time_s   = c(sd(ence_sync$...time_vec),   sd(mice_sync$...time_vec)),
 #   coverage_pct = c(...)
 # ))
+
 
 summary_df <- summary_df[order(summary_df$mean_time_s), ]
 summary_df$speedup_vs_slowest <- max(summary_df$mean_time_s) / summary_df$mean_time_s

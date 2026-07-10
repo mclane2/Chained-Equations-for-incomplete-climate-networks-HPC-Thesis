@@ -3,14 +3,7 @@
 
 # ENCE and MICE - Serial vs Synchronous Metrics Across Missingness/Cutoff Levels
 
-Reads whichever `section_4_1_ENCE_sync_vs_serial_cutoffXX.rds` and
-`section_4_1_MICE_sync_vs_serial_cutoffXX.rds` files exist in the working directory
-and reports RMSE / Bias% / R2 / SRMSE / timing / speedup for each. No internal
-convergence RMSE plots and no hyperparameter agreement tables (see
-section_4_1_plots.Rmd for those) - scatterplots are kept in as a sanity check.
 
-Knit this at any point while cutoff30 / cutoff70 / cutoff90 jobs are still on the
-cluster; missing files are reported and skipped rather than erroring out.
 
 ## Setup
 
