@@ -1,22 +1,25 @@
-# Filename: MICE_C_year_scaling_test.Rmd
+# Filename: ENCE_MICE_C_year_scaling_test.Rmd
 # Author: Marc Lane
 
-# MICE DURR - C Implementation Year Scaling Test
+# ENCE and MICE - C Implementation Year Scaling Test
 
+Run this .Rmd to reproduce the C implementation results for Section 4.2.6
+of my thesis.
 
 ## Setup
 
 Load the Met Eireann daily data (not available in this Github repo), apply the
-station completeness cutoff percentage. Each row is tagged with its calendar
-year so we can build growing/sampled year subsets from a single load.
+station completeness cutoff percentage
 
 ```{r setup, message=FALSE}
 
 cutoff <- 0.50 # Set completeness cutoff percentage
 
 source("scripts/idw.R")
-source("scripts/MICE_C.R")
-source("scripts/MICE_elastic_net_C_implementation/elastic_net_R_glue.R")
+source("scripts/ENCE_C_cov.R")
+source("scripts/ENCE_elastic_net_C_implementation_cov/elastic_net_R_glue.R")
+source("scripts/MICE_C_cov.R")
+source("scripts/MICE_elastic_net_C_implementation_cov/elastic_net_R_glue.R")
 
 data_root <- Sys.getenv("MET_EIREANN_DATA", unset = "../../../met_eireann_daily_data")
 
@@ -50,6 +53,7 @@ names(rain)[6] <- "y"
 # Sorts the table in place by stno, then t
 rain <- rain[order(rain$stno, rain$t), ]
 
+# Compute missingness per station using the full 10 years
 obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)
 names(obs_per_station) <- c("stno", "n_obs")
 total_days <- length(unique(rain$t))
@@ -60,34 +64,31 @@ keep <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
 
 # Setup output file names
 tag          <- sprintf("cutoff%02d", round(cutoff * 100))
-results_file <- sprintf("section_4_2_6_MICE_C_year_scaling_%s.rds", tag)
-log_file     <- sprintf("section_4_2_6_MICE_C_year_scaling_%s.txt", tag)
+results_file <- sprintf("section_cov_ENCE_MICE_year_scaling_%s.rds", tag)
+log_file     <- sprintf("section_cov_ENCE_MICE_year_scaling_%s.txt", tag)
 ```
 
 # Imputation
 
-
 ```{r run, message=FALSE, results='hide'}
 year_values <- c(1, 2, 4, 6, 8, 10)
 n_reps      <- 3
-m           <- 1
 p_fixed_stations <- keep
 
 # Per-year-count mean timing, parallel to the old per-fold time_vec
 C_time_mat <- matrix(NA_real_, length(year_values), n_reps)
+MICE_time_mat <- matrix(NA_real_, length(year_values), n_reps)
 
 # Pooled true/pred across every year count and rep, for report_metrics and scatterplots
 C_true  <- c()
 C_pred  <- c()
-C_years <- c()  # number of years used, tagged per held-out cell, for plotting
+C_years <- c()
+MICE_pred <- c()
 
-# Record which calendar years were actually sampled each (year count, rep), for
-# reproducibility / debugging - e.g. checking whether an unlucky sparse year
-# distorted a particular rep's timing or accuracy
+# Record which calendar years were actually sampled each
 sampled_years_record <- vector("list", length(year_values))
 
-# Record which stations get dropped for insufficient observations within a
-# given sampled window (see guard below) - kept for diagnostics/reproducibility
+# Record which stations get dropped for insufficient observations within a given sampled window
 dropped_stations_record <- vector("list", length(year_values))
 
 for (ni in seq_along(year_values)) {
@@ -122,21 +123,38 @@ for (ni in seq_along(year_values)) {
 
     true_y <- df_sub_truth$y[mask_idx]
 
-    # Run C implementation MICE
+    # Run C implementation ENCE
     C_time_mat[ni, r] <- system.time({
-      C_imp <- MICE_DURR_C(df_sub, response = "y", m = m,
-                         max_impute_cycles = 5, hyp_cycles = 2,
-                         init_method = "idw", max_EM_cycles = 8,
-                         nclusters = 1, nthreads = 16, outfile = NULL,
-                         lambda_options = lambda_options,
-                         alpha_options  = alpha_options,
-                         transformation = sqrt,
-                         reverse_transformation = function(x) x^2)
+      C_imp <- ENCE_cov(df_sub, response = "y", max_cycles = 30,
+                init_method = "idw",
+                x_name = "east", y_name = "north", t_name = "t",
+                C = 15000,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2,
+                truth = df_sub_truth$y, masked_idx = mask_idx,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                nthreads = 16)
     })["elapsed"]
 
     C_true  <- c(C_true, true_y)
     C_pred  <- c(C_pred, C_imp$y[mask_idx])
     C_years <- c(C_years, rep(Y, length(true_y)))
+
+    # Run C implementation MICE
+    MICE_time_mat[ni, r] <- system.time({
+      MICE_imp <- MICE_DURR_cov(df_sub, response = "y", m = 1,
+                max_impute_cycles = 5, hyp_cycles = 2,
+                init_method = "idw", x_name = "east", y_name = "north", t_name = "t",
+                max_EM_cycles = 8,
+                nclusters = 1, nthreads = 16, outfile = NULL,
+                lambda_options = lambda_options,
+                alpha_options  = alpha_options,
+                transformation = sqrt,
+                reverse_transformation = function(x) x^2)
+    })["elapsed"]
+
+    MICE_pred <- c(MICE_pred, MICE_imp$y[mask_idx])
 
     cat("Years =", Y, "(", paste(sampled_years, collapse=","), ") rep", r, "done\n")
   }
@@ -144,14 +162,19 @@ for (ni in seq_along(year_values)) {
 
 # Per-year-count mean timing, parallel to the old per-fold *_time_vec
 C_time_vec <- rowMeans(C_time_mat)
+MICE_time_vec <- rowMeans(MICE_time_mat)
 
 # Total time across the whole sweep
 C_time <- sum(C_time_mat)
+MICE_time <- sum(MICE_time_mat)
 
 true_y <- C_true
 C_y <- C_pred
+MICE_y <- MICE_pred
+MICE_years <- C_years
 
 stopifnot(!anyNA(C_y))
+stopifnot(!anyNA(MICE_y))
 ```
 
 ## Helper Functions
@@ -173,12 +196,11 @@ report_metrics <- function(true, pred, method_name, elapsed) {
 results <- list(
   # Run metadata, so this file identifies itself with no guessing
   meta = list(
-    description = "MICE C implementation year scaling, Section 4.2.6",
+    description = "ENCE/MICE C implementation year scaling, Section 4.2.6, covariance",
     cutoff      = cutoff,
     years_full  = years_full,
     year_values = year_values,
     n_reps      = n_reps,
-    m           = m,
     n_stations  = length(keep),
     run_time    = Sys.time(),
     hostname       = Sys.info()[["nodename"]],
@@ -191,11 +213,16 @@ results <- list(
   C_time     = C_time,
   C_time_vec = C_time_vec,
   C_time_mat = C_time_mat,
+  MICE_time     = MICE_time,
+  MICE_time_vec = MICE_time_vec,
+  MICE_time_mat = MICE_time_mat,
 
   # Held-out predictions for observed-vs-predicted scatterplots
   true_y  = true_y,
   C_y     = C_y,
   C_years = C_years,
+  MICE_y     = MICE_y,
+  MICE_years = MICE_years,
 
   # Which calendar years were sampled per (year count, rep)
   sampled_years_record = sampled_years_record,
@@ -212,10 +239,15 @@ cat("Saved results to", results_file, "\n")
 
 ```{r save_log}
 log_lines <- capture.output({
-  report_metrics(true_y, C_y, "C implementation", C_time)
+  report_metrics(true_y, C_y, "ENCE C implementation", C_time)
 
-  cat("Mean elapsed time by year count:\n")
+  cat("ENCE mean elapsed time by year count:\n")
   print(setNames(round(C_time_vec, 2), year_values))
+
+  report_metrics(true_y, MICE_y, "MICE C implementation", MICE_time)
+
+  cat("MICE mean elapsed time by year count:\n")
+  print(setNames(round(MICE_time_vec, 2), year_values))
 })
 
 writeLines(log_lines, log_file)

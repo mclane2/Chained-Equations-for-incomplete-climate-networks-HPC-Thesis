@@ -1,0 +1,171 @@
+# Filename: MICE_imputation.Rmd
+# Author: Marc Lane
+
+# Final Imputation Run - Computational Time Comparison
+
+Run this .Rmd to reproduce the results from section 4.3 of my thesis
+
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo), apply the station completeness cutoff percentage
+
+```{r setup, message=FALSE}
+
+cutoff <- 0.50 # Set completeness cutoff percentage
+
+source("scripts/idw.R")
+source("scripts/MICE_C_cov.R")
+source("scripts/MICE_elastic_net_C_implementation_cov/elastic_net_R_glue.R")
+
+nodelist <- system('scontrol show hostnames "$SLURM_JOB_NODELIST"', intern = TRUE)
+
+data_root <- Sys.getenv("MET_EIREANN_DATA", unset = "../../../met_eireann_daily_data")
+
+lambda_options <- c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01)
+alpha_options  <- c(0.1, 0.35, 0.65, 0.9)
+
+# Load Met Eireann daily data and station geodata file
+years <- 2016:2025
+files    <- sprintf("%s/daily_rainfall_%d.csv", data_root, years)
+rain  <- do.call(rbind, lapply(files, read.csv))
+
+stations <- read.csv(sprintf("%s/station_geodata.csv", data_root))
+
+# Attach coordinates to each daily observation
+missing_geo <- setdiff(unique(rain$stno), stations$stno)
+if (length(missing_geo)) warning("No geodata for stno: ", paste(missing_geo, collapse=", "))
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Compute total number of days
+total_days <- length(unique(rain$t))
+# Adds a completeness column = observed days / total days.
+obs_per_station$completeness <- obs_per_station$n_obs / total_days
+
+# Apply the % cutoff
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Setup output file names
+tag          <- sprintf("cutoff%02d", round(cutoff * 100))
+results_file <- sprintf("section_cov_MICE_Imputation_Run_%s.rds", tag)
+log_file     <- sprintf("section_cov_MICE_Imputation_Run_%s.txt", tag)
+```
+
+# Imputation
+
+Run every method once per rep on the full 10 years of data, exactly as-is (no masking, no held-out truth). 
+Repeat 3 times to measure timing variance
+
+```{r run, message=FALSE, results='hide'}
+n_reps <- 3
+
+# Per-rep timing
+mice_time_vec <- numeric(n_reps)
+
+# Number of genuinely-missing cells actually filled by each method per rep
+mice_n_imputed <- numeric(n_reps)
+
+missing_idx <- which(is.na(rain$y))
+
+# Pre-build cluster for each time function is called
+library(parallel)
+cl <- makeCluster(nodelist, outfile = sprintf("mice_cluster_%s.log", Sys.getenv("SLURM_JOB_ID")))
+clusterExport(cl, c("rmse", "durr_impute_cycle_cov"))
+so_path <- normalizePath("scripts/MICE_elastic_net_C_implementation_cov/MICE_impute_cov.so")
+clusterExport(cl, "so_path")
+clusterEvalQ(cl, dyn.load(so_path))
+clusterEvalQ(cl, Sys.setenv(OPENBLAS_NUM_THREADS = "1", MKL_NUM_THREADS = "1"))
+
+for (r in seq_len(n_reps)) {
+  cat("Rep", r, "of", n_reps, "\n")
+  set.seed(3000 + r)
+
+  df_miss <- rain
+
+    # Run mice
+    mice_time_vec[r] <- system.time({
+      mice_imp <- MICE_DURR_cov(df_miss, response = "y", m = 10,
+                       max_impute_cycles = 5, hyp_cycles = 2,
+                       init_method = "idw", max_EM_cycles = 8,
+                       cl = cl, nthreads = 16, outfile = "",
+                       lambda_options = lambda_options,
+                       alpha_options  = alpha_options,
+                       transformation = sqrt,
+                       reverse_transformation = function(x) x^2)
+    })["elapsed"]
+    mice_n_imputed[r] <- sum(!is.na(mice_imp$y[missing_idx]))
+
+
+}
+
+stopCluster(cl)
+
+# Totals across the 3 reps
+mice_time <- sum(mice_time_vec)
+
+```
+
+## Helper Functions
+```{r helper functions, message=FALSE}
+report_timing <- function(method_name, elapsed_vec, n_missing, n_imputed_vec) {
+  cat(method_name, "\n", sep = "")
+  cat("Mean time:", round(mean(elapsed_vec), 2), "seconds  (sd:", round(sd(elapsed_vec), 2),
+      "over", length(elapsed_vec), "reps)\n")
+  cat("Per-rep times:", paste(round(elapsed_vec, 2), collapse = ", "), "\n")
+  cat("Coverage:", round(mean(n_imputed_vec), 1), "of", n_missing,
+      sprintf("(%.1f%%)\n\n", 100 * mean(n_imputed_vec) / n_missing))
+}
+```
+
+# Save Results
+```{r save_results}
+results <- list(
+  # Run metadata, so this file identifies itself with no guessing
+  meta = list(
+    description = "MICE ONLY, Final Imputation Run, computational time, covariance",
+    cutoff      = cutoff,
+    n_reps      = n_reps,
+    years       = years,
+    n_stations  = length(keep),
+    n_missing   = length(missing_idx),
+    run_time    = Sys.time(),
+    hostname       = Sys.info()[["nodename"]],
+    slurm_job_id   = Sys.getenv("SLURM_JOB_ID"),
+    slurm_nodelist = Sys.getenv("SLURM_NODELIST"),
+    r_version      = R.version.string
+  ),
+
+  # Timing in seconds summed over all 3 reps
+  mice_time = mice_time,
+  mice_time_vec = mice_time_vec,
+
+  mice_n_imputed = mice_n_imputed
+)
+
+saveRDS(results, results_file)
+cat("Saved results to", results_file, "\n")
+```
+
+# Save printed log
+
+```{r save_log}
+log_lines <- capture.output({
+  report_timing("MICE", mice_time_vec, length(missing_idx), mice_n_imputed)
+})
+
+writeLines(log_lines, log_file)
+cat(log_lines, sep = "\n")
+cat("\nSaved log to", log_file, "\n")
+```

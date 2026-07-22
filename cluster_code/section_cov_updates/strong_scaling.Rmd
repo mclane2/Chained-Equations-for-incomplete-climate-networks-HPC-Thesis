@@ -1,0 +1,265 @@
+
+# Filename: strong_scaling.Rmd
+# Author: Marc Lane
+
+# ENCE and MICE - C Implementation Strong Scaling COVARIANCE VERSION
+
+Run this .Rmd to reproduce the results from Section 4.2.2 of my thesis
+
+## Setup
+
+Load the Met Eireann daily data (not available in this Github repo), apply the station completeness cutoff percentage
+
+```{r setup, message=FALSE}
+
+cutoff <- 0.50 # Set completeness cutoff percentage
+
+data_root <- Sys.getenv("MET_EIREANN_DATA", unset = "../../../met_eireann_daily_data")
+
+source("scripts/idw.R")
+source("scripts/ENCE_C_cov.R")
+source("scripts/ENCE_elastic_net_C_implementation_cov/elastic_net_R_glue.R")
+source("scripts/MICE_C_cov.R")
+source("scripts/MICE_elastic_net_C_implementation_cov/elastic_net_R_glue.R")
+
+# Load Met Eireann daily data and station geodata file
+years <- 2016:2025
+files <- sprintf("%s/daily_rainfall_%d.csv", data_root, years)
+rain  <- do.call(rbind, lapply(files, read.csv))
+
+stations <- read.csv(sprintf("%s/station_geodata.csv", data_root))
+
+# Attach coordinates to each daily observation
+missing_geo <- setdiff(unique(rain$stno), stations$stno)
+if (length(missing_geo)) warning("No geodata for stno: ", paste(missing_geo, collapse=", "))
+rain <- merge(rain, stations[, c("stno", "east", "north")], by = "stno")
+
+# Reshape to the format the rest of the code expects: stno, east, north, t, y
+rain <- rain[, c("stno", "east", "north", "t", "rain")]
+names(rain)[5] <- "y"
+
+# Sorts the table in place by stno, then t
+rain <- rain[order(rain$stno, rain$t), ]
+
+# Compute missingness per station
+# Counts the number of observed days per station
+obs_per_station <- aggregate(!is.na(rain$y), list(stno = rain$stno), sum)
+# Renames columns
+names(obs_per_station) <- c("stno", "n_obs")
+# Compute total number of days
+total_days <- length(unique(rain$t))
+# Adds a completeness column = observed days / total days.
+obs_per_station$completeness <- obs_per_station$n_obs / total_days
+
+# Apply the % cutoff
+keep   <- obs_per_station$stno[obs_per_station$completeness >= cutoff]
+rain   <- rain[rain$stno %in% keep, ]
+
+# Setup output file names
+tag          <- sprintf("C_strong")
+results_file <- sprintf("section_cov_ENCE_MICE_strong_scaling_%s.rds", tag)
+log_file     <- sprintf("section_cov_ENCE_MICE_strong_scaling_%s.txt", tag)
+```
+
+# Imputation
+
+Split data into 10 folds, mask observed entries and impute for each fold separately
+Repeat for different number of threads (strong scaling)
+```{r run, message=FALSE, results='hide'}
+
+# Repeat over these number of threads
+thread_grid <- c(1, 2, 4, 6, 8, 10, 12, 14, 16)
+
+# Split the observed cells into K-folds
+set.seed(916)
+K <- 10
+# Indexes of observed cells
+observed_idx <- which(!is.na(rain$y))
+# Shuffled repeating pattern 1,2,...,K as long as the number of observed cells
+fold_id      <- sample(rep(1:K, length.out = length(observed_idx)))
+# Groups observed_idx into its fold
+folds        <- split(observed_idx, fold_id)
+
+# Initialising variables (one entry per thread count)
+ENCE_time <- setNames(numeric(length(thread_grid)), thread_grid)
+MICE_time <- setNames(numeric(length(thread_grid)), thread_grid)
+ENCE_pred <- rep(NA_real_, nrow(rain))
+MICE_pred <- rep(NA_real_, nrow(rain))
+ENCE_rmse_list <- vector("list", K)
+ENCE_val_list  <- vector("list", K)
+MICE_rmse_list <- vector("list", K)
+ENCE_rmse_by_thread <- setNames(numeric(length(thread_grid)), thread_grid)
+MICE_rmse_by_thread <- setNames(numeric(length(thread_grid)), thread_grid)
+ENCE_time_mat <- matrix(NA_real_, nrow = K, ncol = length(thread_grid),
+                         dimnames = list(NULL, as.character(thread_grid)))
+MICE_time_mat <- matrix(NA_real_, nrow = K, ncol = length(thread_grid),
+                         dimnames = list(NULL, as.character(thread_grid)))
+
+
+for (n_threads in thread_grid) {
+  cat("=== n_threads:", n_threads, " === \n")
+  capture_run <- (n_threads == thread_grid[1])
+
+  ENCE_pred_thread <- rep(NA_real_, nrow(rain))
+  MICE_pred_thread <- rep(NA_real_, nrow(rain))
+
+  # Loop through each fold
+  for (k in seq_len(K)) {
+    cat("Fold", k, "of", K, "\n")
+  
+    test_idx <- folds[[k]]
+  
+    # Hide the masked data for this fold
+    df_miss <- rain
+    df_miss$y[test_idx] <- NA
+
+    # Run synchronous ENCE
+    ENCE_time_mat[k, as.character(n_threads)] <- system.time({
+      ENCE_imp <- ENCE_cov(df_miss, response = "y", max_cycles = 30,
+                     init_method = "idw",
+                     x_name = "east", y_name = "north", t_name = "t",
+                     C = 15000,
+                     transformation = sqrt,
+                     reverse_transformation = function(x) x^2,
+                     truth = rain$y, masked_idx = test_idx,
+                     lambda_options = c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01),
+                     alpha_options  = c(0.1, 0.35, 0.65, 0.9),
+                     nthreads = n_threads)
+    })["elapsed"]
+    ENCE_time[as.character(n_threads)] <- ENCE_time[as.character(n_threads)] + ENCE_time_mat[k, as.character(n_threads)]
+
+    # Run synchronous MICE
+    MICE_time_mat[k, as.character(n_threads)] <- system.time({
+      MICE_imp <- MICE_DURR_cov(df_miss, response = "y", m = 1,
+                                 max_impute_cycles = 5, hyp_cycles = 2, 
+                                 init_method = "idw", max_EM_cycles = 8, 
+                                 nclusters = 1,  nthreads = n_threads,
+                                 outfile = "/dev/null",
+                                 lambda_options = c(0.2, 0.15, 0.1, 0.05, 0.025, 0.01),
+                                 alpha_options  = c(0.1, 0.35, 0.65, 0.9),
+                                 transformation = sqrt,
+                                 reverse_transformation = {function(x) x^2})
+    })["elapsed"]
+    MICE_time[as.character(n_threads)] <- MICE_time[as.character(n_threads)] + MICE_time_mat[k, as.character(n_threads)]
+
+    cat("Cumulative ENCE:", round(ENCE_time[as.character(n_threads)], 1), "s\n")
+    cat("Cumulative MICE:", round(MICE_time[as.character(n_threads)], 1), "s\n")
+
+    ENCE_pred_thread[test_idx] <- ENCE_imp$y[test_idx]
+    MICE_pred_thread[test_idx] <- MICE_imp$y[test_idx]
+
+    if (capture_run) {
+      ENCE_pred[test_idx] <- ENCE_imp$y[test_idx]
+      MICE_pred[test_idx] <- MICE_imp$y[test_idx]
+      ENCE_rmse_list[[k]] <- attr(ENCE_imp, "rmse_history")
+      ENCE_val_list[[k]]  <- attr(ENCE_imp, "val_rmse_history")
+      MICE_rmse_list[[k]] <- attr(MICE_imp, "rmse_histories")
+    }
+  }
+
+  ENCE_rmse_by_thread[as.character(n_threads)] <-
+    sqrt(mean((ENCE_pred_thread[observed_idx] - rain$y[observed_idx])^2))
+  MICE_rmse_by_thread[as.character(n_threads)] <-
+    sqrt(mean((MICE_pred_thread[observed_idx] - rain$y[observed_idx])^2))
+}
+
+
+true_y   <- rain$y[observed_idx]
+ENCE_y   <- ENCE_pred[observed_idx]
+MICE_y   <- MICE_pred[observed_idx]
+
+# Check every held-out cell got a prediction
+stopifnot(!anyNA(ENCE_y), !anyNA(MICE_y))
+
+# Pad folds with shorter RMSE history with NA's, bind into a matrix 
+pad <- function(lst) sapply(lst, function(v) c(v, rep(NA, max(lengths(lst)) - length(v))))
+# Calculates the mean of the RMSE lists across folds
+ENCE_rmse   <- rowMeans(pad(ENCE_rmse_list),   na.rm = TRUE)
+ENCE_val    <- rowMeans(pad(ENCE_val_list),    na.rm = TRUE)
+
+```
+
+## Helper Functions
+```{r helper functions, message=FALSE}
+report_metrics <- function(true, pred, method_name, elapsed) {
+  rmse <- sqrt(mean((pred - true)^2))
+  cat(method_name, "\n", sep = "")
+  cat("Time:  ", round(elapsed, 2), "seconds\n")
+  cat("RMSE:  ", rmse, "\n")
+  cat("Bias %:", sum(pred - true) / sum(true) * 100, "\n")
+  cat("R2:    ", 1 - sum((pred - true)^2) / sum((true - mean(true))^2), "\n")
+  cat("SRMSE: ", rmse / mean(true), "\n\n")
+}
+```
+
+# Save Results
+
+```{r save_results}
+results <- list(
+  # Run metadata, so this file identifies itself with no guessing
+  meta = list(
+    description = "ENCE/MICE C implementation Strong Scaling, Section 4.2.2 COVARIANCE",
+    cutoff      = cutoff,
+    K           = K,
+    seed        = 916,
+    years       = years,
+    n_stations  = length(keep),
+    n_observed  = length(observed_idx),
+    run_time    = Sys.time(),
+    thread_grid   = thread_grid,
+    hostname       = Sys.info()[["nodename"]],
+    slurm_job_id   = Sys.getenv("SLURM_JOB_ID"),
+    slurm_nodelist = Sys.getenv("SLURM_NODELIST"),
+    r_version      = R.version.string
+  ),
+
+  # Timing in seconds summed over all K folds
+
+  ENCE_time   = ENCE_time,  
+  MICE_time   = MICE_time,
+  ENCE_time_mat = ENCE_time_mat,
+  MICE_time_mat = MICE_time_mat,
+
+  # Held-out predictions for observed-vs-predicted scatterplots
+  true_y   = true_y,
+  ENCE_y   = ENCE_y,
+  MICE_y   = MICE_y,
+
+  # Internal convergence RMSE (between cycles) averaged across folds per cycle
+  ENCE_rmse   = ENCE_rmse,
+
+  # Validation RMSE on masked cells averaged across folds per cycle
+  ENCE_val   = ENCE_val,
+
+  # Raw per-fold histories (length-K lists)
+  ENCE_rmse_list   = ENCE_rmse_list,
+  ENCE_val_list    = ENCE_val_list,
+  MICE_rmse_list  = MICE_rmse_list,
+
+  ENCE_rmse_by_thread = ENCE_rmse_by_thread,
+  MICE_rmse_by_thread = MICE_rmse_by_thread,
+
+  # Station Identifiers
+  stno  = rain$stno[observed_idx],
+  t     = rain$t[observed_idx],
+  east  = rain$east[observed_idx],
+  north = rain$north[observed_idx],
+  fold  = fold_id
+)
+
+saveRDS(results, results_file)
+cat("Saved results to", results_file, "\n")
+```
+
+# Save printed log
+
+```{r save_log}
+log_lines <- capture.output({
+  report_metrics(true_y, ENCE_y, "ENCE", ENCE_time["1"])
+  report_metrics(true_y, MICE_y, "MICE", MICE_time["1"])
+})
+
+writeLines(log_lines, log_file)
+cat(log_lines, sep = "\n")
+cat("\nSaved log to", log_file, "\n")
+```
