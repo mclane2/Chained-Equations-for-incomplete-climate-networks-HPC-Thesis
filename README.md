@@ -11,10 +11,10 @@ This directory contains the code used to obtain all the results of the thesis. A
 - `section_4.1/` - For the synchronous vs serial results, obtained entirely in R.
 - `section_4.2/` - Contains the C implementation results.
 - `section_4.3/` - Contains the method comparison results.
-- `section_cov_updates/` - Repeated experiments for the C implementation after the covariance updates optimisation was added.
+- `section_cov_updates/` - Repeated experiments for section 4.2 and 4.3 for the C implementation after the covariance updates optimisation was added.
 
 **`development_worklog/`**
-This repository was my original working. It shows the development of the code over the course of the project.
+This directory was my original working . It shows the development of the code over the course of the project.
 
 **`original_implementation/`**
-An unmodified clone of Brian O'Sullivan's [ENCE_MICE_DURR](https://github.com/BrianOSullivan-2000/ENCE_MICE_DURR),
+An unmodified clone of Brian O'Sullivan's [ENCE_MICE_DURR](https://github.com/BrianOSullivan-2000/ENCE_MICE_DURR).
