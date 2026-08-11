@@ -9,8 +9,11 @@ For a presentation of the code running, see: [Parallel-Chained-Equations](https:
 This directory contains the code used to obtain all the results of the thesis. All this code was run on the Seagull cluster, maintained by Research IT at Trinity College Dublin.
 
 - `section_4.1/` - For the synchronous vs serial results, obtained entirely in R.
+
 - `section_4.2/` - Contains the C implementation results.
+
 - `section_4.3/` - Contains the method comparison results.
+
 - `section_cov_updates/` - Repeated experiments for section 4.2 and 4.3 for the C implementation after the covariance updates optimisation was added.
 
 **`development_worklog/`**
