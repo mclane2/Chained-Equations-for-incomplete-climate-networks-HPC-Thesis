@@ -1,5 +1,5 @@
 
-This repository is the working directory for my M.Sc. in High Performance Computing thesis "Chained Equations for incomplete climate networks". 
+This repository is the working directory for my M.Sc. in High Performance Computing thesis "Chained Equations for incomplete climate networks", supervised by Brian O'Sullivan at Met Éireann.
 
 This thesis focused on accelerating the elastic net chained equations (ENCE) and multiple imputation by chained equations with direct use of regularized regression (MICE DURR) imputation methods developed in the paper: https://doi.org/10.1002/joc.8513. All experiments were run on daily rainfall records from the Republic of Ireland, collected from Met Éireann's network. The code in this repository does not run on its own, since access to the data requires permission from Met Éireann. 
 
